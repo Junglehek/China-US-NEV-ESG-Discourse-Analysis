@@ -1,0 +1,11 @@
+# Report PDFs, extracted texts and manual corrections are not distributed (copyright of the reports).
+01_Source/pdf/**/*.pdf
+01_Source/v3/
+01_Source/manual_overrides/approved/
+01_Source/manual_overrides/drafts/
+02_Pipeline/logs/
+old_cleaned/
+venv/
+__pycache__/
+*.pyc
+.DS_Store
