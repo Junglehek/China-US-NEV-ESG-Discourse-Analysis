@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
-"""多栏排版检测：判断 PDF 页面是否为多栏，以及默认提取是否会造成跨栏串行。
+"""Column detection: does a PDF page use several columns, and would a plain extraction mix text across columns?
 
-用法：
+Usage:
     cd <repository root>
     QA/venv/bin/python QA/scripts/detect_columns.py
 
-原理
+How it works
 ----
-多栏排版的特征：同一水平带（相同 y 坐标附近）上，词的 x 坐标分成若干互不重叠的簇，
-簇之间存在明显的横向空白间隙（gutter）。若存在这种间隙，而提取时仅按 y 排序，
-则不同栏的文字会被交错拼接 —— 句子因此断裂，搭配关系被伪造。
+On a page with columns, the words in the same horizontal band (around the same y coordinate) fall into separate clusters along x,
+with a clear vertical gap (gutter) between them. If such a gap exists and the text is extracted by y position only,
+words from different columns are interleaved. Sentences break apart and collocations appear that are not in the text.
 
-判据：把页面横向切成 100 个格子，统计每格中词的密度；连续 ≥6 格（即页宽 6%）
-密度为 0 且两侧均有内容 → 判定为栏间隙。
+Rule: the page is cut into 100 vertical strips and the word density of each strip is counted. Six or more empty strips in a row (6% of the page width)
+with text on both sides count as a gutter.
 """
 import collections
 from pathlib import Path
@@ -32,9 +32,9 @@ MIN_GAP_BINS = 6
 
 
 def gutters_of_page(page):
-    """返回该页检测到的栏间隙数量（0 = 单栏）。"""
+    """Return the number of gutters found on the page (0 means a single column)."""
     words = page.extract_words()
-    if len(words) < 40:          # 内容过少的页（封面/插页）不计
+    if len(words) < 40:          # pages with very little text (covers, inserts) are skipped
         return None
     w = page.width
     occupied = [0] * BINS
@@ -43,7 +43,7 @@ def gutters_of_page(page):
         hi = max(0, min(BINS - 1, int(word["x1"] / w * BINS)))
         for b in range(lo, hi + 1):
             occupied[b] += 1
-    # 找出中间区域连续为 0 的段
+    # find runs of empty strips in the middle of the page
     first = next((i for i, v in enumerate(occupied) if v), None)
     last = next((i for i in range(BINS - 1, -1, -1) if occupied[i]), None)
     if first is None or last is None:
@@ -60,8 +60,8 @@ def gutters_of_page(page):
 
 
 def crossing_risk(page):
-    """检查按 y 排序提取时是否会跨栏串行：
-    统计同一水平带内是否同时存在分属不同栏的词。"""
+    """Check whether extracting by y position would mix columns:
+    count horizontal bands that contain words from different columns."""
     words = page.extract_words()
     if len(words) < 40:
         return None
@@ -77,14 +77,14 @@ def crossing_risk(page):
 
 
 def main():
-    print("多栏排版检测")
+    print("Column detection")
     print("=" * 76)
-    print(f"{'报告':<34}{'抽样页':>6}{'多栏页占比':>12}{'跨栏串行风险':>14}")
+    print(f"{'Report':<34}{'Pages':>6}{'Multi-column %':>16}{'Mixing risk':>14}")
     print("-" * 76)
     for name in KNOWN:
         p = PDF_DIR / name
         if not p.exists():
-            print(f"{name:<34}  未找到")
+            print(f"{name:<34}  not found")
             continue
         with pdfplumber.open(p) as pdf:
             total = len(pdf.pages)
@@ -101,15 +101,15 @@ def main():
                 if r is not None:
                     risky.append(r)
         if not valid:
-            print(f"{name[:32]:<34}{0:>6}      内容过少，跳过")
+            print(f"{name[:32]:<34}{0:>6}      too little text, skipped")
             continue
         avg_risk = sum(risky) / len(risky) if risky else 0
         flag = " ⚠️" if multi / valid > 0.3 else ""
         print(f"{name[:32]:<34}{valid:>6}{multi / valid:>11.0%}{avg_risk:>13.0%}{flag}")
     print("-" * 76)
-    print("多栏页占比：检测到栏间隙的页面比例")
-    print("跨栏串行风险：同一水平带内同时存在左右两栏文字的比例 —— 该比例即为")
-    print("              按 y 排序提取时句子被交错拼接的风险程度")
+    print("Multi-column %: share of pages with at least one gutter")
+    print("Mixing risk: share of horizontal bands that contain text from both columns, which is")
+    print("             how likely an extraction by y position is to interleave sentences")
 
 
 if __name__ == "__main__":

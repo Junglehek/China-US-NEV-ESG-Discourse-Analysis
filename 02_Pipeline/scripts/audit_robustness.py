@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""审计2025稳健性语料；与2024 primary的58项历史回归报告完全分开。"""
+"""Audit of the 2025 robustness corpus, kept separate from the 58 regression checks of the 2024 main corpus."""
 from __future__ import annotations
 
 import importlib.metadata
@@ -145,14 +145,14 @@ def main() -> None:
     MANIFEST_PATH.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
     (REPORT_DIR / "output_audit_robustness.json").write_text(
         json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
-    md = ["# ESG_V3 2025稳健性语料端到端审计", "", f"**总状态：{summary['status']}**", "",
-          "| 检查 | 状态 | 详情 |", "|---|---|---|"]
+    md = ["# ESG_V3 end-to-end audit of the 2025 robustness corpus", "", f"**Overall status: {summary['status']}**", "",
+          "| Check | Status | Details |", "|---|---|---|"]
     for row in results:
         md.append(f"| {row['check']} | {row['status']} | {row['detail'].replace('|', '/')} |")
-    md += ["", "## 依赖版本", ""]
+    md += ["", "## Dependency versions", ""]
     for package, version in versions.items():
         md.append(f"- `{package}`: {version}")
-    md += ["", f"完整SHA-256清单：`{MANIFEST_PATH.relative_to(ROOT)}`"]
+    md += ["", f"Full SHA-256 manifest: `{MANIFEST_PATH.relative_to(ROOT)}`"]
     (REPORT_DIR / "output_audit_robustness.md").write_text("\n".join(md) + "\n", encoding="utf-8")
 
     for row in results:

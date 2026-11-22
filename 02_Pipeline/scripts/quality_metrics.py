@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
-"""ESG 语料 v3 全量质量指标。
+"""Quality measures for the whole v3 corpus.
 
-对 100% 语料计算可复现指标；人工抽检只负责验证自动指标没有系统性盲点。
-输出：
+The measures are computed for every page and can be reproduced. Manual checks only confirm that the automatic measures have no systematic blind spots.
+Output:
 - QA/reports/v3_quality_metrics.csv
 - QA/reports/v3_quality_report.md
 - QA/logs/quality_metrics.json
 
-重要说明
+Notes
 --------
-停用词密度用于区分连续正文与标签/表格，不单独证明语法完整。
-句子完整度由句末标点、行首碎片、句长、乱码和重复等多项指标共同判断。
-阈值是本项目的预设质控线，不是语言学普适定律；未达线会进入人工复核清单，
-不会被脚本静默删除。
+Function-word density separates running text from labels and tables. On its own it does not show that a sentence is grammatical.
+Whether sentences are complete is judged from several measures together: final punctuation, fragments at line starts, sentence length, garbled characters and repetition.
+The thresholds are quality-control lines set for this project, not general facts about language. Pages below a line are listed for manual review
+and are never deleted silently by the script.
 """
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ from typing import Any
 
 from prepare_corpus import ROOT, OUT_ROOT, STOPWORDS, WORD_RE, stopword_density, alpha_ratio, words
 
-# 旧版（V2）语料仅用于新旧对比；V3 不再维护该目录，缺失时自动跳过对比。
+# The old (V2) corpus is used only for before-and-after comparison. V3 no longer keeps that folder, so the comparison is skipped if it is missing.
 OLD_DIR = ROOT / "old_cleaned"  # early (pre-v3) corpus, not distributed; comparison is skipped if absent
 REPORT_DIR = ROOT / "03_QA" / "reports"
 LOG_DIR = ROOT / "02_Pipeline" / "logs"
@@ -83,7 +83,7 @@ def metrics(path: Path, dictionary: set[str]) -> dict[str, Any]:
     lower_tokens = [w.lower() for w in tokens]
     types = set(lower_tokens)
 
-    # 连续正文行：排除标题/标签后计算完整度。
+    # Running-text lines: completeness is computed after headings and labels are excluded.
     prose = [line for line in lines if len(words(line)) >= 5 and stopword_density(line) >= 0.12]
     complete = [line for line in prose if TERMINAL_RE.search(line)]
     lower_start = [line for line in prose if LOWER_START_RE.search(line)]
@@ -91,7 +91,7 @@ def metrics(path: Path, dictionary: set[str]) -> dict[str, Any]:
     very_long = [line for line in prose if len(words(line)) > 80]
     low_alpha = [line for line in lines if len(line) > 10 and alpha_ratio(line) < 0.45]
 
-    # 精确重复长行；合法重复仍需人工判断，指标本身不自动删除。
+    # Long lines that repeat exactly. Some repetition is legitimate and still needs a human decision, so nothing is deleted here.
     long_lines = [line for line in lines if len(words(line)) >= 8]
     counts = collections.Counter(long_lines)
     repeated_occurrences = sum(c for c in counts.values() if c >= 3)
@@ -125,7 +125,7 @@ def metrics(path: Path, dictionary: set[str]) -> dict[str, Any]:
 
 
 def status(m: dict[str, Any]) -> dict[str, str]:
-    """项目预设质控线；只用于触发复核，不自动删除文本。"""
+    """Quality-control lines set for this project. They only trigger a review and never delete text."""
     return {
         "sentence_complete": "PASS" if m["sentence_complete_pct"] >= 85 else "REVIEW",
         "fragment": "PASS" if m["lowercase_start_fragment_pct"] <= 10 else "REVIEW",
@@ -173,13 +173,13 @@ def write_reports(rows: list[dict[str, Any]], set_name: str) -> None:
     log_path = LOG_DIR / f"quality_metrics_{set_name}.json"
     log_path.write_text(json.dumps(rows, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    # Markdown 对比表
+    # Markdown comparison table
     md = [
-        f"# v3 全量质量报告（{set_name}）", "",
-        "> 指标覆盖 100% 输出语料。停用词密度只区分正文与标签，不单独证明语法完整。",
-        "> PASS/REVIEW 阈值为项目预设质控线；REVIEW 意味着进入人工核验，不代表自动判废。", "",
-        "## 总表", "",
-        "| 文档 | 版本 | 词数 | 完整句% | 小写行首碎片% | 平均句长 | 超长句% | 低字母行% | 重复长行% | OOV type% | 状态 |",
+        f"# v3 corpus quality report ({set_name})", "",
+        "> The measures cover all output text. Function-word density separates running text from labels and does not by itself show that a sentence is grammatical.",
+        "> PASS/REVIEW thresholds are quality-control lines set for this project. REVIEW means the page goes to manual checking, not that it is rejected.", "",
+        "## Summary", "",
+        "| Document | Version | Words | Complete sentences % | Lower-case line-start fragments % | Mean sentence length | Very long sentences % | Low-letter lines % | Repeated long lines % | OOV types % | Status |",
         "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|",
     ]
     for m in rows:
@@ -191,12 +191,12 @@ def write_reports(rows: list[dict[str, Any]], set_name: str) -> None:
             f"{m['duplicate_long_line_pct']:.1f} | {m['oov_type_pct']:.1f} | "
             f"{'REVIEW: '+','.join(review) if review else 'PASS'} |"
         )
-    md += ["", "## 可疑词示例（供人工四分类，不自动删除）", ""]
+    md += ["", "## Examples of doubtful words (for manual sorting, nothing is deleted automatically)", ""]
     for m in rows:
         if m["version"] == "no_tables":
             md.append(f"### {m['doc_id']}")
-            md.append(f"- OOV 示例：{', '.join(m['oov_examples'][:25]) or '无'}")
-            md.append(f"- 疑似粘连词：{', '.join(m['suspected_joined_words'][:20]) or '无'}")
+            md.append(f"- OOV examples: {', '.join(m['oov_examples'][:25]) or 'none'}")
+            md.append(f"- Possible run-together words: {', '.join(m['suspected_joined_words'][:20]) or 'none'}")
             md.append("")
     report_path = REPORT_DIR / f"v3_quality_report_{set_name}.md"
     report_path.write_text("\n".join(md) + "\n", encoding="utf-8")

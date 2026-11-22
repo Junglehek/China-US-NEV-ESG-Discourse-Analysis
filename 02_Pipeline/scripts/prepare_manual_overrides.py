@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""为版式失败页生成可人工修订的覆盖草稿；不会修改正式语料。
+"""Create editable drafts for pages whose layout could not be parsed. The final corpus is never touched.
 
-草稿完成且双人/双轮核验后，再复制到 approved/ 并创建 approval.json。
-正式流水线只读取 approved/，永不读取 drafts/。
+Once a draft has been finished and checked twice, copy it to approved/ and add an approval.json file.
+The pipeline reads only approved/ and never reads drafts/.
 """
 from __future__ import annotations
 
@@ -45,7 +45,7 @@ def main() -> None:
                 layout = f"[layout extraction failed: {exc!r}]"
             (folder / f"{prefix}_raw_native.txt").write_text(native, encoding="utf-8")
             (folder / f"{prefix}_raw_layout.txt").write_text(layout, encoding="utf-8")
-            # 不覆盖用户已经开始编辑的草稿。
+            # Do not overwrite a draft that someone has already started editing.
             for version in ("with_tables", "no_tables"):
                 draft = folder / f"{prefix}_{version}.txt"
                 if not draft.exists():

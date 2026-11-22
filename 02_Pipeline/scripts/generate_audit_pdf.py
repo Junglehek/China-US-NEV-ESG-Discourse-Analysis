@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""把机器审计 JSON 渲染成可读 PDF，供用户快速查看。
+"""Turn the machine-readable audit JSON into a PDF that is quick to read.
 
-输出：03_QA/reports/output_audit.pdf
+Output: 03_QA/reports/output_audit.pdf
 """
 from __future__ import annotations
 
@@ -62,32 +62,32 @@ def main() -> None:
 
     body = f"""<!doctype html><html><head><meta charset='utf-8'></head><body>
     <h1>ESG_V3 Output Audit Report</h1>
-    <p class='meta'>生成日期：{dt.date.today().isoformat()}　工作区：<code>{ROOT.name}</code></p>
-    <div class='status'><b>总状态：{e(audit['status'])}</b><br>
-    单元测试：21/21 PASS　端到端审计：{passed}/{len(audit['checks'])} PASS</div>
+    <p class='meta'>Generated on {dt.date.today().isoformat()}. Workspace: <code>{ROOT.name}</code></p>
+    <div class='status'><b>Overall status: {e(audit['status'])}</b><br>
+    Unit tests: 21/21 PASS. End-to-end audit: {passed}/{len(audit['checks'])} PASS</div>
 
-    <h2>1. 正式语料摘要</h2>
-    <table><thead><tr><th>文档</th><th>PDF页</th><th>with tables</th><th>no tables</th>
-    <th>版式隔离页</th><th>完整句</th><th>行首碎片</th><th>平均句长</th></tr></thead>
+    <h2>1. Summary of the final corpus</h2>
+    <table><thead><tr><th>Document</th><th>PDF pages</th><th>with tables</th><th>no tables</th>
+    <th>Isolated pages</th><th>Complete sentences</th><th>Line-start fragments</th><th>Mean sentence length</th></tr></thead>
     <tbody>{''.join(doc_rows)}
-    <tr class='total'><td>总计</td><td>{sum(d['pages'] for d in docs)}</td><td>{total_with:,}</td><td>{total_no:,}</td><td>{isolated_total}页待恢复；{manual_total}页已恢复</td><td colspan='3'>脚本 word count；SE token 待建库</td></tr></tbody></table>
+    <tr class='total'><td>Total</td><td>{sum(d['pages'] for d in docs)}</td><td>{total_with:,}</td><td>{total_no:,}</td><td>{isolated_total} pages to restore, {manual_total} restored</td><td colspan='3'>script word count; Sketch Engine tokens after upload</td></tr></tbody></table>
 
-    <h2>2. Tesla 混合 PDF / OCR</h2>
-    <ul><li>210 页；原生文本为空：0 页；原生文本 &lt;100 字符：14 页；&lt;500 字符：49 页。</li>
-    <li>检查 OCR 区域：{len(ocr)}；接受区域：{sum(bool(r.get('kept')) for r in ocr)}；拒绝区域：{sum(not r.get('kept') for r in ocr)}。</li>
-    <li>补入完整句：{len(accepted_sentences)}；空格词约 {sum(len(s.split()) for s in accepted_sentences):,}；涉及 {len(ocr_pages)} 页。</li>
-    <li>低文本页按左/中/右三栏 OCR；只有高置信度、完整、非重复叙述句进入语料。</li></ul>
+    <h2>2. Tesla mixed PDF and OCR</h2>
+    <ul><li>210 pages. Pages with no native text: 0. Native text under 100 characters: 14 pages. Under 500 characters: 49 pages.</li>
+    <li>OCR regions checked: {len(ocr)}. Accepted: {sum(bool(r.get('kept')) for r in ocr)}. Rejected: {sum(not r.get('kept') for r in ocr)}.</li>
+    <li>Complete sentences added: {len(accepted_sentences)}, about {sum(len(s.split()) for s in accepted_sentences):,} words, on {len(ocr_pages)} pages.</li>
+    <li>Pages with little text were recognized in three columns (left, middle, right). Only confident, complete and non-repeated running sentences entered the corpus.</li></ul>
 
-    <h2>3. 端到端审计（{len(audit['checks'])}项）</h2>
-    <table class='checks'><thead><tr><th>检查</th><th>状态</th><th>详情</th></tr></thead><tbody>{check_rows}</tbody></table>
+    <h2>3. End-to-end audit ({len(audit['checks'])} checks)</h2>
+    <table class='checks'><thead><tr><th>Check</th><th>Status</th><th>Details</th></tr></thead><tbody>{check_rows}</tbody></table>
 
-    <h2>4. 依赖版本</h2><ul>{versions}</ul>
-    <h2>5. 可复现材料</h2>
-    <ul><li><code>02_Pipeline/scripts/prepare_corpus.py</code>：正式制备源码</li>
-    <li><code>02_Pipeline/tests/test_prepare_corpus.py</code>：21项防回归测试</li>
-    <li><code>02_Pipeline/artifacts_manifest.json</code>：SHA-256清单</li>
-    <li><code>02_Pipeline/logs/prepare_*.json</code>：逐页及逐项修复日志</li></ul>
-    <p class='note'>注意：PASS 表示已通过当前预先规定的自动化门槛，并不取代人工 PDF 对照抽检。</p>
+    <h2>4. Dependency versions</h2><ul>{versions}</ul>
+    <h2>5. Materials for reproduction</h2>
+    <ul><li><code>02_Pipeline/scripts/prepare_corpus.py</code>: the preparation code</li>
+    <li><code>02_Pipeline/tests/test_prepare_corpus.py</code>: regression tests</li>
+    <li><code>02_Pipeline/artifacts_manifest.json</code>: SHA-256 manifest</li>
+    <li><code>02_Pipeline/logs/prepare_*.json</code>: page-by-page and fix-by-fix logs</li></ul>
+    <p class='note'>PASS means that the automatic thresholds set in advance were met. It does not replace manual comparison with the PDF pages.</p>
     </body></html>"""
 
     css = """

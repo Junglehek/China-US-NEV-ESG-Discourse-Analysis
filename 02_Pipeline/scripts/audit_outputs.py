@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""端到端审计正式产物，并生成可校验的 SHA-256 清单。
+"""End-to-end audit of the final outputs, with a SHA-256 manifest that can be checked later.
 
-运行：
+Run:
     cd <repository root>
     02_Pipeline/venv/bin/python 02_Pipeline/scripts/audit_outputs.py
 
-失败时退出码为 1；任何一项 FAIL 都不得上传 Sketch Engine。
+The script exits with code 1 if anything fails. Nothing that fails a check may be uploaded to Sketch Engine.
 """
 from __future__ import annotations
 
@@ -83,7 +83,7 @@ def main() -> None:
     for config in (d for d in DOCUMENTS if d.set_name == "primary"):
         docs.append(audit_document(config, results))
 
-    # 已知历史缺陷的防回归检查。
+    # Regression checks for defects that were fixed earlier.
     nio = (OUT_ROOT / "primary" / "no_tables" / "nio_2024.txt").read_text(encoding="utf-8")
     xpeng = (OUT_ROOT / "primary" / "no_tables" / "xpeng_2024.txt").read_text(encoding="utf-8")
     rivian = (OUT_ROOT / "primary" / "no_tables" / "rivian_2024.txt").read_text(encoding="utf-8")
@@ -124,9 +124,9 @@ def main() -> None:
     check("regression: inline footnote markers removed corpus-wide", not footnote_residuals,
           f"residuals={footnote_residuals}", results)
 
-    # 残余交错候选：几何层已修的分栏交错之外，仍可能有版面叠加型残留。
-    # 该指标不要求为 0（含作者原文即以 and 结尾的条款列举等合法形态），
-    # 但设上界防止未来改动引入新的交错回归。
+    # Remaining interleaving candidates: the geometry stage fixes column interleaving, but overlapping layouts can still leave traces.
+    # This count does not have to be zero (some lists in the original text really do end with "and"),
+    # but it has an upper limit so that later changes cannot quietly bring interleaving back.
     sys.path.insert(0, str(ROOT / "03_QA" / "scripts"))
     from scan_residual_interleaving import scan as scan_interleaving
     interleaving_caps = {"no_tables": 3, "with_tables": 15}
@@ -217,7 +217,7 @@ def main() -> None:
     check("manual recovery: XPeng p13 matrix policy", xp13_policy,
           "stakeholder matrix excluded from no_tables and retained in with_tables", results)
 
-    # 第三轮普通抽检中用户逐项提出的修复，全部固化为端到端断言。
+    # Fixes requested item by item during the third round of manual checks, kept here as end-to-end assertions.
     byd25 = page_record("byd_2024", 25)
     byd25_no, byd25_with = byd25.get("no_tables", []), byd25.get("with_tables", [])
     byd25_required = ["Shareholders and investors", "Regular information disclosure",
@@ -316,7 +316,7 @@ def main() -> None:
           and "Executive Leadership" in rivian28.get("with_tables", []),
           f"no_lines={len(rivian28.get('no_tables', []))}; with_lines={len(rivian28.get('with_tables', []))}", results)
 
-    # Tesla 栅格正文必须被补回；否则混合 PDF 的 OCR 路径没有生效。
+    # The Tesla text that exists only as images must be restored; otherwise the OCR path for mixed PDFs did not run.
     tesla_required = (
         "Task Force on Climate-Related Financial Disclosures",
         "lifecycle assessment (LCA)",
@@ -328,7 +328,7 @@ def main() -> None:
     check("regression: Tesla raster prose recovered", not missing,
           "missing=" + repr(missing), results)
 
-    # 所有正式源码、测试、语料、日志、报告的哈希与依赖版本。
+    # Hashes and dependency versions of all scripts, tests, corpus files, logs and reports.
     artifact_roots = [
         ROOT / "02_Pipeline" / "scripts",
         ROOT / "02_Pipeline" / "tests",
@@ -340,8 +340,8 @@ def main() -> None:
     artifacts = {}
     for base in artifact_roots:
         for path in sorted(base.rglob("*")):
-            # output_audit 自身由本脚本在哈希收集后重写，不能把旧版本纳入清单；
-            # run_output_audit.log 也正在被 shell 重定向写入。排除两类自引用文件。
+            # The audit report is rewritten by this script after the hashes are collected, so its old version cannot be listed,
+            # and run_output_audit.log is still being written by the shell. Both self-referencing files are left out.
             if (path.name in {"output_audit.md", "output_audit.json", "output_audit.pdf", "run_output_audit.log"}
                     or "__pycache__" in path.parts):
                 continue
@@ -375,14 +375,14 @@ def main() -> None:
     report_json = REPORT_DIR / "output_audit.json"
     report_json.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    md = ["# ESG_V3 端到端产物审计", "", f"**总状态：{summary['status']}**", "",
-          "| 检查 | 状态 | 详情 |", "|---|---|---|"]
+    md = ["# ESG_V3 end-to-end output audit", "", f"**Overall status: {summary['status']}**", "",
+          "| Check | Status | Details |", "|---|---|---|"]
     for row in results:
         md.append(f"| {row['check']} | {row['status']} | {row['detail'].replace('|', '/')} |")
-    md += ["", "## 依赖版本", ""]
+    md += ["", "## Dependency versions", ""]
     for package, version in versions.items():
         md.append(f"- `{package}`: {version}")
-    md += ["", f"完整 SHA-256 清单：`{MANIFEST_PATH.relative_to(ROOT)}`"]
+    md += ["", f"Full SHA-256 manifest: `{MANIFEST_PATH.relative_to(ROOT)}`"]
     (REPORT_DIR / "output_audit.md").write_text("\n".join(md) + "\n", encoding="utf-8")
 
     for row in results:

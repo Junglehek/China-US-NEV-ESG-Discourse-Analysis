@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""生成本地人工核验 HTML：左侧 PDF 原页，右侧提取文本/人工恢复草稿。
+"""Build the local HTML for manual checks: the original PDF page on the left, the extracted text or restored draft on the right.
 
-顺序严格对应对话工作流：第一轮 Tesla p177 pilot → 第二轮其余6个恢复页 →
-第三轮普通抽检。用户只在对话框回复，不在 HTML/文件中填写反馈。
-衍生页面图片仅供本地质量核验，不能上传公开仓库。
+The order follows the review rounds: first the Tesla p177 pilot, then the other six restored pages,
+then the ordinary sample. Feedback was given in conversation, not in the HTML or other files.
+The page images are for local quality checks only and must not be uploaded to a public repository.
 """
 from __future__ import annotations
 
@@ -15,11 +15,11 @@ import pymupdf
 
 from prepare_corpus import ROOT, DOCUMENTS, OUT_ROOT, LOG_ROOT
 
-OUT_DIR = ROOT / "03_QA" / "samples" / "人工抽检_并排对照"
+OUT_DIR = ROOT / "03_QA" / "samples" / "manual_check_side_by_side"
 
 RECOVERY_SECTIONS = [
-    ("第一轮：Tesla p177 pilot（已通过）", [("tesla_2024", 177)]),
-    ("第二轮：六页人工恢复（已通过并插回）", [
+    ("Round 1: Tesla p177 pilot (passed)", [("tesla_2024", 177)]),
+    ("Round 2: six pages restored by hand (passed and restored)", [
         ("byd_2024", 24),
         ("nio_2024", 31),
         ("nio_2024", 32),
@@ -30,7 +30,7 @@ RECOVERY_SECTIONS = [
 ]
 
 QA_SECTIONS = [
-    ("第三轮：普通抽检已完成并修复", [
+    ("Round 3: ordinary sample checked and fixed", [
         ("byd_2024", 25), ("byd_2024", 79), ("byd_2024", 132),
         ("nio_2024", 24), ("nio_2024", 79), ("nio_2024", 132),
         ("xpeng_2024", 18), ("xpeng_2024", 51), ("xpeng_2024", 83),
@@ -76,13 +76,13 @@ def main() -> None:
             with_lines = record["with_tables"]
             no_html = "".join(f"<p>{html.escape(p)}</p>" for p in no_lines)
             if no_lines == with_lines:
-                right = "<h3>两版本相同</h3>" + no_html
+                right = "<h3>Both versions are identical</h3>" + no_html
             else:
                 with_html = "".join(f"<p class='with'>{html.escape(p)}</p>" for p in with_lines)
-                right = ("<h3>A：no_tables（主语料）</h3>" + no_html
-                         + "<details><summary><b>B：with_tables（点击展开核验）</b></summary>"
+                right = ("<h3>A: no_tables (main corpus)</h3>" + no_html
+                         + "<details><summary><b>B: with_tables (click to open)</b></summary>"
                          + with_html + "</details>")
-            badge = '<span class="kept">当前进入语料</span>'
+            badge = '<span class="kept">Currently in the corpus</span>'
         else:
             reason = data["isolated"].get(page_no, {})
             samples = reason.get("samples", [])
@@ -94,31 +94,31 @@ def main() -> None:
             with_lines = ([line.strip() for line in with_path.read_text(encoding="utf-8").splitlines() if line.strip()]
                           if with_path.exists() else [])
             no_html = ("".join(f"<p class='draft'>{html.escape(p)}</p>" for p in no_lines)
-                       if no_lines else "<p class='empty'>建议为空：该页没有符合主语料标准的连续定性内容。</p>")
+                       if no_lines else "<p class='empty'>Suggested to stay empty: the page has no running text that meets the main-corpus standard.</p>")
             if no_lines == with_lines and no_lines:
-                drafts_html = "<h3>黄色：两版本相同的人工恢复草稿</h3>" + no_html
+                drafts_html = "<h3>Yellow: restored draft, identical in both versions</h3>" + no_html
             elif no_lines or with_lines:
                 with_html = ("".join(f"<p class='draft with'>{html.escape(p)}</p>" for p in with_lines)
-                             if with_lines else "<p class='empty'>with_tables 草稿为空。</p>")
-                drafts_html = ("<h3>黄色 A：no_tables 草稿</h3>" + no_html
-                               + "<details open><summary><b>黄色 B：with_tables 草稿（点击收起/展开）</b></summary>"
+                             if with_lines else "<p class='empty'>The with_tables draft is empty.</p>")
+                drafts_html = ("<h3>Yellow A: no_tables draft</h3>" + no_html
+                               + "<details open><summary><b>Yellow B: with_tables draft (click to fold or open)</b></summary>"
                                + with_html + "</details>")
             else:
-                drafts_html = "<p class='waiting'>草稿尚未预填：当前不用处理。</p>"
+                drafts_html = "<p class='waiting'>No draft has been filled in yet. Nothing to do for now.</p>"
             right = (
-                "<h3>该页尚未进入正式语料</h3>"
-                f"<p>失败信号：多条目拼接 {reason.get('multi_bullet_sentences', 0)}/"
-                f"{reason.get('sentences', 0)}；近重复对 {reason.get('near_duplicate_pairs', 0)}；"
-                f"小写行首碎片率 {reason.get('lowercase_start_ratio', 0):.0%}。</p>"
+                "<h3>This page is not yet in the final corpus</h3>"
+                f"<p>Failure signals: joined list items {reason.get('multi_bullet_sentences', 0)}/"
+                f"{reason.get('sentences', 0)}, near-duplicate pairs {reason.get('near_duplicate_pairs', 0)}, "
+                f"lower-case line-start fragments {reason.get('lowercase_start_ratio', 0):.0%}.</p>"
                 + drafts_html
-                + ("<h3>红色：自动错误样例（不要采用）</h3>"
+                + ("<h3>Red: example of the automatic error (do not use)</h3>"
                    + "".join(f"<p class='bad'>{html.escape(p)}</p>" for p in samples) if samples else "")
             )
-            badge = '<span class="excluded">待人工恢复</span>'
+            badge = '<span class="excluded">Waiting for manual restoration</span>'
         return f"""
         <section class="page-card">
-          <header><strong>{html.escape(doc_id)} · PDF 第 {page_no} 页</strong>{badge}
-            <label><input type="checkbox"> 我已在对话框反馈</label></header>
+          <header><strong>{html.escape(doc_id)} · PDF page {page_no}</strong>{badge}
+            <label><input type="checkbox"> Feedback given</label></header>
           <div class="columns"><div class="source"><img src="{image_name}"></div>
           <div class="extracted">{right}</div></div>
         </section>"""
@@ -131,7 +131,7 @@ def main() -> None:
 
     total = sum(len(pages) for _, pages in ALL_SECTIONS)
     document = f"""<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
-<title>ESG_V3 人工抽检并排对照</title><style>
+<title>ESG_V3 manual checks, side by side</title><style>
 body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;margin:20px;background:#f5f6f8;color:#222}}
 .intro,.page-card{{background:white;border:1px solid #ddd;border-radius:10px;padding:16px;margin:18px 0}}
 .phase>h1{{position:sticky;top:0;background:#183b59;color:white;padding:12px 16px;border-radius:8px;z-index:3}}
@@ -144,11 +144,11 @@ body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;margin:
 .waiting{{background:#edf1f4!important;color:#53616b}} .kept,.excluded{{padding:3px 8px;border-radius:12px;font-size:13px}}
 .kept{{background:#dcf6e5;color:#175c2d}} .excluded{{background:#ffe2df;color:#8b1e16}}
 @media(max-width:900px){{.columns{{grid-template-columns:1fr}}}}
-</style></head><body><div class="intro"><h1>ESG_V3 人工核验（按对话顺序）</h1>
-<p><b>反馈渠道只有对话框。</b>不要在 HTML、Word 或 TXT 中输入答案；HTML 只用来看左侧 PDF 和右侧草稿。</p>
-<ol><li>Tesla p177 pilot 已通过。</li><li>第二轮6页已通过并全部插回语料。</li><li>第三轮24页普通抽检已完成；用户反馈与同类全库修复均已落实。</li></ol>
-<p><b>三轮人工核验全部完成。本页现作为本地审计记录保留，不再需要用户操作。</b></p>
-<p>检查内容：阅读顺序、漏字、错字、该留/该删。总页面数：{total}。</p></div>{''.join(sections)}</body></html>"""
+</style></head><body><div class="intro"><h1>ESG_V3 manual checks (in review order)</h1>
+<p><b>Feedback was given in conversation only.</b> Nothing is typed into the HTML, Word or TXT files. The HTML is only for viewing the PDF on the left and the draft on the right.</p>
+<ol><li>The Tesla p177 pilot passed.</li><li>The six pages of round 2 passed and were restored to the corpus.</li><li>The ordinary sample of 24 pages in round 3 is complete, and the fixes it prompted have been applied to the whole corpus.</li></ol>
+<p><b>All three rounds of manual checks are complete. This page is kept as a local audit record and needs no further action.</b></p>
+<p>Checked: reading order, missing words, wrong words, and text that should have been kept or removed. Pages: {total}.</p></div>{''.join(sections)}</body></html>"""
     index = OUT_DIR / "index.html"
     index.write_text(document, encoding="utf-8")
     print(f"Review: {index}")

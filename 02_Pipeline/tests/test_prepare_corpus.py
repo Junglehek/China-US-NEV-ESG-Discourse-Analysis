@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""正式流水线的防回归测试。
+"""Regression tests for the preparation pipeline.
 
-这些测试来自 §37–§38 审计中实际发现的错误。每次修改清理规则后必须运行：
+Each test comes from an error that was actually found during the audits. Run them after every change to the cleaning rules:
     cd <repository root>
     02_Pipeline/venv/bin/python -m unittest discover -s 02_Pipeline/tests -v
 """
@@ -98,7 +98,7 @@ class ProtectedEntityTests(unittest.TestCase):
                 self.assertEqual(p.repair_internal_spacing(source), expected)
 
     def test_unlocked_does_not_become_nio(self):
-        # 实际 PDF 字符层曾把 unlocked 抽成 uNI Ock ed（l→I）。
+        # The character layer of one PDF really did turn "unlocked" into "uNI Ock ed" (l read as I).
         result = p.repair_internal_spacing("doors automatically uNI Ock ed")
         self.assertEqual(result, "doors automatically unlocked")
         self.assertNotIn("NIO", result)
@@ -162,7 +162,7 @@ class ProtectedEntityTests(unittest.TestCase):
         self.assertEqual(p.apply_verified_page_corrections("byd_2024", 68, source), source)
 
     def test_textlines_sorted_by_vertical_position(self):
-        """Tesla p74/p148：box 内 textlines 未按 y 排列，导致标题与引出句倒置。"""
+        """Tesla p74/p148: text lines inside a box were not sorted by height, so a heading and its first sentence swapped places."""
         def textline(y, text):
             return {"bbox": [40, y, 300, y + 14],
                     "spans": [{"text": text, "bbox": [40, y, 300, y + 14], "size": 12,
@@ -180,7 +180,7 @@ class ProtectedEntityTests(unittest.TestCase):
         self.assertEqual(
             p.stitch_across_boxes(["Waste Generated in", "Manufacturing (metric tons)"]),
             ["Waste Generated in Manufacturing (metric tons)"])
-        # 无悬挂功能词的相邻标题不得拼接
+        # Neighbouring headings that do not end in a function word must not be joined.
         for pair in (["Energy Management", "We manage energy carefully."],
                      ["Governance", "Economic performance"],
                      ["Our approach to safety", "Product Safety"]):
@@ -188,7 +188,7 @@ class ProtectedEntityTests(unittest.TestCase):
                 self.assertEqual(p.stitch_across_boxes(pair), pair)
 
     def test_spans_ordered_by_original_reading_order_not_x(self):
-        """NIO p61：同一 textline 内混入了不同原始行的 span，只按 x 排序会互相插入。"""
+        """NIO p61: one text line mixed spans from different source lines, and sorting by x alone interleaved them."""
         def span(x, block, line, text):
             return {"text": text, "bbox": [x, 100, x + 40, 112], "block": block,
                     "line": line, "size": 8}
@@ -207,25 +207,25 @@ class ProtectedEntityTests(unittest.TestCase):
         frag = "With these updates, we have formulated the"
         self.assertEqual(p.drop_truncated_prefix_duplicates([frag, "01 Outlining", full]),
                          ["01 Outlining", full])
-        # 标题是后续句子的前缀，但短且不以功能词结尾，必须保留
+        # The heading is a prefix of the next sentence, but it is short and does not end in a function word, so it must stay.
         kept = ["Energy Management", "Energy Management is central to our operations."]
         self.assertEqual(p.drop_truncated_prefix_duplicates(kept), kept)
-        # 以功能词结尾但不是任何句子的前缀，必须保留
+        # It ends in a function word but is not the prefix of any sentence, so it must stay.
         lone = ["We continue to invest in the", "A separate unrelated sentence."]
         self.assertEqual(p.drop_truncated_prefix_duplicates(lone), lone)
 
     def test_out_of_dictionary_proper_names_are_not_refragmented(self):
-        # Lucid p4：Rawlinson 不在词典中，曾与前词并成 PeterRawlinson 后被
-        # wordninja 重切为 'Peter Raw lins on'。
+        # Lucid p4: Rawlinson is not in the dictionary. It was once joined to the previous word as PeterRawlinson
+        # and then split again by wordninja into 'Peter Raw lins on'.
         self.assertEqual(p.clean_plain_text("Peter Rawlinson"), "Peter Rawlinson")
         self.assertEqual(p.clean_plain_text("A Message From Peter Rawlinson"),
                          "A Message From Peter Rawlinson")
-        # 真碎片仍须修复
+        # Real fragments must still be repaired.
         self.assertEqual(p.clean_plain_text("found atio n"), "foundation")
         self.assertEqual(p.clean_plain_text("Moro wali"), "Morowali")
 
     def test_columns_split_by_span_when_engine_merges_two_columns_into_one_line(self):
-        """Lucid p4 型：左右栏被并入同一 textline，行起点全同，gutter 仅 1.35% 页宽。"""
+        """Lucid p4 pattern: two columns merged into one text line, all lines start at the same x, and the gutter is only 1.35% of the page width."""
         def line(y, segments):
             return {"bbox": [segments[0][0], y, segments[-1][1], y + 12],
                     "spans": [{"text": t, "bbox": [a, y, b, y + 12]} for a, b, t in segments]}
@@ -241,7 +241,7 @@ class ProtectedEntityTests(unittest.TestCase):
         self.assertTrue(all("right column" in l for l in right))
 
     def test_single_column_ragged_right_edge_is_not_split(self):
-        """普通单栏段落右边界参差不齐，不得被误切成多栏。"""
+        """An ordinary single-column paragraph with a ragged right edge must not be split into columns."""
         def line(y, x1, text):
             return {"bbox": [100, y, x1, y + 12],
                     "spans": [{"text": text, "bbox": [100, y, x1, y + 12]}]}
@@ -269,6 +269,7 @@ class ProtectedEntityTests(unittest.TestCase):
 class GarbleAndLayoutTests(unittest.TestCase):
     def test_garble_removed_but_legitimate_unicode_kept(self):
         self.assertNotIn("�", p.strip_garbled_runs("Normal text ��������"))
+        # The last string is Chinese on purpose: it checks that legitimate non-ASCII text, such as a Chinese source note, is not removed as garbled.
         for source in ("temperature below 1.5°C", "・NIO governance", "NEV‒APEAL Study", "数据来源：中国汽车工业协会"):
             with self.subTest(source=source):
                 self.assertEqual(p.strip_garbled_runs(source), source)
@@ -285,7 +286,7 @@ class GarbleAndLayoutTests(unittest.TestCase):
         self.assertTrue(p.is_layout_failure(p.layout_failure_signals(bad)))
 
     def test_interleaved_duplicate_columns_are_flagged(self):
-        # Tesla p177 型：同一段两栏交错，出现近重复句 + 多个小写行首碎片。
+        # Tesla p177 pattern: two columns interleaved within one paragraph, giving near-duplicate sentences and several fragments that start in lower case.
         bad = [
             "Phlogopite mica",
             "Phlogopite mica is used as a thermal barrier for various applications in our products.",

@@ -1,25 +1,25 @@
 #!/usr/bin/env python3
-"""ESG 语料 v3 正式制备流水线。
+"""The v3 preparation pipeline for the ESG corpus.
 
-目标
+Purpose
 ----
-从原始 PDF 重新制备可用于 Sketch Engine 的语料，而不是修补旧 cleaned 文件。
-流水线遵循 TenTen / jusText 的核心原则：
-1. 版式感知提取（恢复多栏阅读顺序）
-2. 句内断行修复与软连字符修复
-3. 页眉页脚、目录移除
-4. 表格生成两个版本：with_tables（保留全部单元格文本）与
-   no_tables（移除数字/标签，保留单元格中的完整叙述句）
-5. 页面级 JSONL 与逐步日志，保证可追溯、可复现
+Rebuild the corpus for Sketch Engine from the original PDFs instead of patching the old cleaned files.
+The pipeline follows the main principles behind TenTen and jusText:
+1. Layout-aware extraction (restores the reading order of pages with several columns)
+2. Repair of line breaks inside sentences and of soft hyphens
+3. Removal of headers, footers and tables of contents
+4. Two versions for tables: with_tables (keeps all cell text) and
+   no_tables (drops numbers and labels but keeps complete sentences found in cells)
+5. Page-level JSONL output and step-by-step logs, so that every change can be traced and repeated
 
-注意
+Notes
 ----
-- 该脚本不删除或覆盖任何旧语料。
-- 表格版本名 no_tables 的准确含义是：移除表格数据与标签，但保留表格里的完整句子。
-- Tesla 2024 为混合扫描件：仅对布局引擎识别出的图片文本区做局部 OCR；
-  不对已有原生文本重新 OCR，避免制造额外错字。
+- The script never deletes or overwrites the old corpus.
+- no_tables means exactly this: table data and labels are removed, complete sentences inside tables are kept.
+- Tesla 2024 is a mixed PDF with scanned parts. OCR is applied only to image text regions found by the layout engine,
+  and native text is never recognized again, so that no new errors are introduced.
 
-运行
+Run
 ----
     cd <repository root>
     python 02_Pipeline/scripts/prepare_corpus.py --set primary
@@ -51,7 +51,7 @@ import pymupdf4llm
 import pysbd
 import wordninja
 
-# 项目根：本文件位于 <ROOT>/02_Pipeline/scripts/prepare_corpus.py
+# Project root: this file lives at <ROOT>/02_Pipeline/scripts/prepare_corpus.py
 ROOT = Path(__file__).resolve().parents[2]
 PDF_ROOT = ROOT / "01_Source" / "pdf"
 PDF_SUBDIR = {"primary": "2024_main", "robustness": "2025_robustness"}
@@ -60,7 +60,7 @@ MANUAL_OVERRIDE_ROOT = ROOT / "01_Source" / "manual_overrides" / "approved"
 LOG_ROOT = ROOT / "02_Pipeline" / "logs"
 TESSERACT = Path(shutil.which("tesseract") or "tesseract")
 
-# 功能词表用于区分连续正文与标签/表格。不是用来判断句子语法是否完整。
+# The function-word list separates running text from labels and tables. It does not judge whether a sentence is grammatical.
 STOPWORDS = {
     "a", "an", "the", "and", "or", "but", "if", "while", "although", "because",
     "as", "at", "by", "for", "from", "in", "into", "of", "on", "onto", "over",
@@ -77,7 +77,7 @@ STOPWORDS = {
     "those", "who", "whom", "which", "what", "whether", "also", "within", "across",
 }
 
-# 遇到换行连字符时，这些独立前缀通常是保留连字符的真实复合词。
+# When a hyphen falls at a line break, these free-standing prefixes usually belong to real compounds, so the hyphen is kept.
 HYPHEN_PREFIXES = {
     "anti", "bio", "carbon", "climate", "closed", "co", "cross", "e", "end", "energy",
     "five", "forward", "full", "high", "human", "inter", "intra", "life", "location",
@@ -117,7 +117,7 @@ def record_repair(kind: str, before: str, after: str) -> None:
         REPAIR_EXAMPLES[kind].append({"before": before[:180], "after": after[:180]})
 
 
-_NINJA_COST = wordninja.DEFAULT_LANGUAGE_MODEL._wordcost  # wordninja 内部词表，作真词第二依据
+_NINJA_COST = wordninja.DEFAULT_LANGUAGE_MODEL._wordcost  # wordninja's internal vocabulary, used as a second check for real words
 
 _SUFFIXES = (
     ("ally", "al"), ("ily", "y"), ("ies", "y"), ("ied", "y"),
@@ -135,9 +135,9 @@ _PREFIXES = (
 
 
 def known_simple(token: str) -> bool:
-    """扩展词典判断：系统词典 + wordninja 词表 + 领域词 + 词缀剥离。
+    """Dictionary check: system dictionary + wordninja vocabulary + domain terms + affix stripping.
 
-    目的不是拼写纠错，而是区分「真词」与「粘连/拆碎产物」。
+    The aim is not spelling correction but telling real words apart from pieces that were joined or split by mistake.
     """
     x = token.lower().strip("'-’")
     if not x:
@@ -154,7 +154,7 @@ def known_simple(token: str) -> bool:
             rest = x[len(prefix):]
             if rest in SYSTEM_WORDS or rest in DOMAIN_TERMS or rest in _NINJA_COST:
                 return True
-            # 前缀 + 带后缀词干
+            # prefix + stem with a suffix
             for suffix, repl in _SUFFIXES:
                 if rest.endswith(suffix) and len(rest) > len(suffix) + 2:
                     stem = rest[:-len(suffix)] + repl
@@ -163,57 +163,57 @@ def known_simple(token: str) -> bool:
     return False
 
 
-# 专有名词/型号缩写：不得参与「碎词合并」，否则 NIO F1 会被并成 NI OF1
-# （因 of 是真词，会把后续字母吸附过去）。
+# Proper names and model codes must not take part in merging split words, otherwise "NIO F1" becomes "NI OF1"
+# (because "of" is a real word and pulls the following letters into it).
 PROTECTED_TOKEN_RE = re.compile(r"^(?:[A-Z]{2,}|[A-Z]\d+|[A-Z]{1,3}\d*)$")
 FUNCTION_WORD_MAXLEN = 3
 
 
 def is_protected_token(piece: str) -> bool:
-    """全大写缩写（NIO/BYD/ESG）、字母+数字型号（F1/E1/X9）受保护。"""
+    """All-caps abbreviations (NIO/BYD/ESG) and letter-digit model codes (F1/E1/X9) are protected."""
     return bool(PROTECTED_TOKEN_RE.match(piece)) and not piece.islower()
 
 
 def suspicious_fragment(piece: str) -> bool:
     q = piece.lower()
     if len(q) == 1:
-        # e 需保护：CO2e in 会被 token 化为 ... 'e' + 'in'；若把 e 当碎片，
-        # 会因 ein 也是真词而误并成 CO2ein。代价是罕见的 'e mail' 不自动合并。
+        # "e" needs protection: "CO2e in" is tokenized as ... 'e' + 'in'. If "e" were treated as a fragment,
+        # it would be merged into "CO2ein", because "ein" is also a word. The cost is that the rare "e mail" is not merged.
         return q not in {"a", "i", "e"}
     if len(q) == 2:
         return q not in SYSTEM_WORDS
-    # 词典外的人名/地名不是「碎片」。Rawlinson 不在词典中，曾使
-    # `Peter Rawlinson` 被判为碎词串、拼成 PeterRawlinson 后由 wordninja
-    # 重切为 `Peter Raw lins on`（Lucid p4 实测）。PDF 真碎片的形态是短片段
-    # 或小写延续片段，而首字母大写且长度 ≥6 的形态是典型专名，予以保护。
+    # Names of people and places missing from the dictionary are not fragments. Rawlinson is not in the dictionary,
+    # so "Peter Rawlinson" was once taken for a run of fragments, joined into PeterRawlinson and then split by wordninja
+    # into "Peter Raw lins on" (seen on Lucid p4). Real PDF fragments are short pieces or lower-case continuations,
+    # whereas a capitalized piece of six or more letters is typically a proper name, so it is protected.
     if len(piece) >= 6 and piece[:1].isupper() and piece[1:].islower():
         return False
     return not known_simple(piece)
 
 
 def merge_spaced_fragments(text: str) -> str:
-    """修复 PDF 字符层把一个词拆成多个空格片段的问题。
+    """Repair words that the PDF character layer split into several pieces separated by spaces.
 
-    两段式策略，拒绝贪心逐段匹配（贪心会把 'h a s p...' 误并成 hasp）：
-    1. 检测「碎词串」：单空格分隔的连续字母单元，且可疑碎片 ≥2，
-       或 ≥1 可疑碎片且整串拼接后是真词。
-    2. 整串拼接：直接是真词则合并；否则交给 wordninja 做全局最优切分，
-       只有切出的每一段都是真词才接受，否则原样保留。
-    保守原则：'in to'、'a lot of' 这类正常两词组合不会被触碰。
+    This works in two stages instead of greedy matching piece by piece (greedy matching would turn 'h a s p...' into "hasp"):
+    1. Find runs of fragments: consecutive letter units separated by single spaces, with at least two doubtful fragments,
+       or at least one doubtful fragment if the whole run joined together is a real word.
+    2. Join the whole run. If the result is a real word, keep it. Otherwise let wordninja find the best split,
+       and accept the split only if every piece is a real word. If not, leave the text unchanged.
+    The approach is deliberately cautious: ordinary pairs such as 'in to' and 'a lot of' are never touched.
     """
     units = re.findall(r"[A-Za-z]+|[^A-Za-z]+", text)
     out, i, n = [], 0, len(units)
     while i < n:
         if not units[i].isalpha():
             out.append(units[i]); i += 1; continue
-        # 撇号后的缩约后缀不得与下一词合并：That's the 曾被重新并回 That'sthe。
+        # A contraction suffix after an apostrophe must not be merged with the next word: "That's the" was once turned into "That'sthe".
         if i > 0 and units[i - 1] in {"'", "’"} and units[i].lower() in {"s", "t", "re", "ve", "ll", "d", "m"}:
             out.append(units[i]); i += 1; continue
-        # 受保护缩写/型号（NIO/BYD/F1）单独输出，不进入碎词 run，
-        # 否则它会阻断同一行后续真实碎词的修复（BYD h a s → BYD h a s）。
+        # Protected abbreviations and model codes (NIO/BYD/F1) are output on their own and kept out of fragment runs,
+        # otherwise they would block the repair of real fragments later in the same line (BYD h a s would stay BYD h a s).
         if is_protected_token(units[i]):
             out.append(units[i]); i += 1; continue
-        # 收集连续 run：字母单元之间只隔单个空格，遇受保护 token 即停
+        # Collect a run: letter units separated by single spaces only, stopping at a protected token
         j, pieces = i, []
         while j < n and units[j].isalpha() and not is_protected_token(units[j]):
             pieces.append(units[j])
@@ -225,10 +225,10 @@ def merge_spaced_fragments(text: str) -> str:
         susp = sum(suspicious_fragment(p) for p in pieces)
         joined = "".join(pieces)
         replaced = None
-        consumed = j  # 默认消费整个 run 末端
-        # run 内已排除受保护 token（在收集阶段剥离），此处仅作兜底。
+        consumed = j  # by default the whole run is consumed
+        # Protected tokens were already removed while collecting the run. This is only a safety net.
         has_protected = any(is_protected_token(p) for p in pieces)
-        # 合并结果是短功能词时，要求原片段全为小写，避免 O+F1 → OF1 这类误并。
+        # If the result is a short function word, all original pieces must be lower case, to avoid merges such as O + F1 -> OF1.
         merge_to_function_word = (
             len(joined) <= FUNCTION_WORD_MAXLEN and joined.lower() in STOPWORDS
             and not all(p.islower() for p in pieces)
@@ -243,8 +243,8 @@ def merge_spaced_fragments(text: str) -> str:
             if replaced:
                 record_repair("merge_spaced_fragments", " ".join(pieces), replaced)
             else:
-                # 整串失败时回退：取含可疑碎片的最长已知前缀
-                # （如 'w ho pursues' → 前缀 'who' + 正常保留 'pursues'）。
+                # If the whole run fails, fall back to the longest known prefix that contains a doubtful fragment
+                # (for example 'w ho pursues' -> the prefix 'who', with 'pursues' left as it is).
                 for wsize in range(len(pieces) - 1, 1, -1):
                     sub = pieces[:wsize]
                     if not any(suspicious_fragment(p) for p in sub):
@@ -253,7 +253,7 @@ def merge_spaced_fragments(text: str) -> str:
                     if len(prefix) >= 3 and known_simple(prefix):
                         replaced = prefix.upper() if all(p.isupper() for p in sub) else prefix
                         record_repair("merge_spaced_fragments_prefix", " ".join(sub), replaced)
-                        consumed = i + 2 * wsize - 2  # 消费到前缀末尾
+                        consumed = i + 2 * wsize - 2  # consume up to the end of the prefix
                         break
         if replaced is not None:
             out.append(replaced)
@@ -283,19 +283,19 @@ def merge_domain_initialisms(parts: list[str]) -> list[str]:
 
 
 def split_concatenated_words(text: str) -> str:
-    """仅拆分非词典长串；接受前要求拆分后的每一段均为合法词/领域词。"""
+    """Split only long strings that are not in the dictionary, and accept a split only if every piece is a valid word or domain term."""
     def repl(match: re.Match) -> str:
         token = match.group(0)
-        # 低于 15 字符的串不动：双段复合词（whistleblower / workforce）常被
-        # 词典漏收，短串误拆的风险大于收益，留给人工 OOV 复核。
+        # Strings shorter than 15 characters are left alone. Two-part compounds (whistleblower, workforce) are often
+        # missing from dictionaries, and splitting short strings does more harm than good. They are left for manual review.
         if known_simple(token) or len(token) < 15:
             return token
         internal_caps = sum(c.isupper() for c in token[1:])
         if internal_caps and len(token) < 25:
             return token
         parts = merge_domain_initialisms(wordninja.split(token))
-        # 长串（≥20）允许双段拆分（如重复的 communicationcommunication）；
-        # 更短的串须拆出 ≥3 段且每段均为真词，防止误拆复合词。
+        # Long strings (20 characters or more) may be split into two pieces (for example a doubled communicationcommunication).
+        # Shorter strings must split into at least three pieces that are all real words, so that compounds are not broken up.
         enough_parts = len(parts) >= 3 or (len(parts) == 2 and len(token) >= 20)
         if not enough_parts or not all(known_simple(p) and len(p) >= 2 for p in parts):
             return token
@@ -303,23 +303,23 @@ def split_concatenated_words(text: str) -> str:
         record_repair("split_concatenated_words", token, after)
         return after
 
-    # 连字符两侧分别处理，真实连字符本身保留。
+    # The two sides of a hyphen are handled separately, and real hyphens are kept.
     return re.sub(r"[A-Za-z]{10,}", repl, text)
 
 
 def repair_company_initialisms(text: str) -> str:
-    """把被 PDF 字符层拆开的公司缩写重新组合。
+    """Rejoin company abbreviations that the PDF character layer split apart.
 
-    只针对已知公司名的字母序列，避免通用合并规则误伤（NIO F1 曾被并成 NI OF1）。
+    Only the letter sequences of known company names are handled, so that the general merge rules cannot misfire ("NIO F1" was once merged into "NI OF1").
     """
     patterns = {
         "NIO": r"N\s*I\s*O", "BYD": r"B\s*Y\s*D",
         "XPENG": r"X\s*P\s*E\s*N\s*G", "ESG": r"E\s*S\s*G",
     }
     for target, pat in patterns.items():
-        # 左右两侧都必须是「非字母」且不能紧邻孤立的单字母碎片。
-        # 反例：PDF 把 unlocked 拆成 'u N I O ck ed'，若不检查左右语境，
-        # 其中的 'N I O' 会被误合成 NIO，产出 'u NIO ck ed'。
+        # Both sides must be non-letters and must not sit next to an isolated single-letter fragment.
+        # Counterexample: the PDF split "unlocked" into 'u N I O ck ed'. Without checking the context on both sides,
+        # 'N I O' would be merged into NIO, giving 'u NIO ck ed'.
         full = re.compile(rf"(?<![A-Za-z])(?<!\b[A-Za-z]\s)({pat})(?![A-Za-z])(?!\s[A-Za-z]\b)")
 
         def sub(m: re.Match, target=target) -> str:
@@ -356,7 +356,7 @@ VERIFIED_SPACING_CORRECTIONS = (
 
 
 def apply_verified_spacing_corrections(text: str) -> str:
-    """只修经 PDF 视觉对照确认的提取空格错误，不修改作者原文拼写错误。"""
+    """Fix only spacing errors made during extraction and confirmed against the PDF, never the authors' own spelling."""
     for regex, replacement in VERIFIED_SPACING_CORRECTIONS:
         changed, count = re.subn(regex, replacement, text, flags=re.I)
         if count:
@@ -372,11 +372,11 @@ FOOTNOTE_DIGIT_WHITELIST = {
 
 
 def strip_inline_footnote_markers(text: str) -> str:
-    """移除粘在正文词/年份后的上标脚注号，保护产品名、版本号和单位。
+    """Remove superscript footnote numbers stuck to words or years, while protecting product names, versions and units.
 
-    PDF 上标在 NFKC 后会变成普通数字：`charging⁷`→`charging7`、
-    `2030¹,²`→`20301,2`。不能简单删所有词后数字，否则会误伤 Drive48、
-    Scope3、NADArch2.0 等。规则只处理当前语料中可验证的形态并记录前后值。
+    PDF superscripts become ordinary digits after NFKC normalization, for example `charging⁷` -> `charging7` and
+    `2030¹,²` -> `20301,2`. Simply deleting every digit after a word would damage Drive48,
+    Scope3, NADArch2.0 and similar names, so the rule handles only forms verified in this corpus and logs the text before and after.
     """
     before = text
 
@@ -403,19 +403,19 @@ def strip_inline_footnote_markers(text: str) -> str:
 
 def repair_internal_spacing(text: str) -> str:
     before = text
-    # NIO p79 的 unlocked 被 PDF 字形稳定抽成 `uNI Ock ed`（l→I）；
-    # 该精确形态在上下文中无歧义，先于公司缩写规则修复，避免误认成 NIO。
+    # On NIO p79 the PDF glyphs consistently turn "unlocked" into `uNI Ock ed` (l read as I).
+    # This exact form is unambiguous in context and is fixed before the company-abbreviation rule, so that it is not mistaken for NIO.
     text = re.sub(r"\bu\s*N\s*I\s*Ock\s*ed\b", "unlocked", text, flags=re.I)
     text = repair_company_initialisms(text)
-    # 经 PDF 对照确认的精确规则必须先执行；否则通用 wordninja 会先把
-    # partyreviewed→party reviewed、onlionly→on lion ly，原模式便无法匹配。
+    # Exact rules confirmed against the PDF must run first. Otherwise the general wordninja step would already have turned
+    # partyreviewed into "party reviewed" and onlionly into "on lion ly", and the original patterns would no longer match.
     text = apply_verified_spacing_corrections(text)
     text = re.sub(r"(?<=[,;:])(?=[A-Za-z])", " ", text)
-    # 所有格/缩约后丢空格：children'swell-rounded、can'tdo → children's well-rounded、can't do
+    # Missing space after a possessive or contraction: children'swell-rounded, can'tdo -> children's well-rounded, can't do
     text = re.sub(r"([A-Za-z]+['’](?:s|t|re|ve|ll|d|m))(?=[a-z])", r"\1 ", text, flags=re.I)
     text = merge_spaced_fragments(text)
     text = split_concatenated_words(text)
-    # Wordninja 可能把 BYD 分成 BY + D；领域缩写在空格层再合并一次。
+    # wordninja may split BYD into BY + D, so domain abbreviations are joined again at the spacing stage.
     text = re.sub(r"\bB\s+Y\s+D\b", "BYD", text, flags=re.I)
     text = re.sub(r"\bE\s+S\s+G\b", "ESG", text, flags=re.I)
     text = apply_verified_spacing_corrections(text)
@@ -494,7 +494,7 @@ def alpha_ratio(text: str) -> float:
 
 
 def pattern(text: str) -> str:
-    """页眉页脚跨页比对模式：小写化、数字归一化、压缩标点空白。"""
+    """Pattern for comparing headers and footers across pages: lower case, digits normalized, punctuation and spaces collapsed."""
     text = normalize_unicode(text).lower()
     text = re.sub(r"\d+", "#", text)
     text = re.sub(r"[^a-z#]+", " ", text)
@@ -502,7 +502,7 @@ def pattern(text: str) -> str:
 
 
 def dehyphenate_join(lines: Iterable[str]) -> str:
-    """把同一版式块内的视觉换行恢复为连续文本。"""
+    """Turn visual line breaks inside one layout block back into continuous text."""
     cleaned = [normalize_unicode(x).strip() for x in lines if normalize_unicode(x).strip()]
     if not cleaned:
         return ""
@@ -525,38 +525,38 @@ GUTTER_STRADDLE_MIN = 3
 
 
 def sort_textlines_by_reading_order(lines: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """按 (y, x) 恢复 box 内的视觉阅读顺序。
+    """Restore the visual reading order inside a box by (y, x).
 
-    版式引擎返回的 textlines 未必按纵向位置排列。Tesla p74 的同一 box 内
-    `Leveraging autonomy to`（y=220）排在了 `accelerate EV adoption`（y=267）
-    之后，产出倒置的标题 `accelerate EV adoption Leveraging autonomy to`；
-    p148 的 `Modern Slavery Statement.`（y=340）同样排到了引出它的
-    `...see our`（y=317）之前。y 取整到 1pt，避免同一视觉行因浮点差异被拆序。
+    The text lines returned by the layout engine are not always sorted by vertical position. In one box on Tesla p74,
+    `Leveraging autonomy to` (y=220) came after `accelerate EV adoption` (y=267),
+    which produced the reversed heading `accelerate EV adoption Leveraging autonomy to`.
+    On p148, `Modern Slavery Statement.` (y=340) likewise came before the line that introduces it,
+    `...see our` (y=317). y is rounded to 1 pt so that one visual line is not split by floating-point differences.
     """
     return sorted(lines, key=lambda l: (round(float((l.get("bbox") or [0, 0])[1])),
                                         float((l.get("bbox") or [0, 0])[0])))
 
 
 def detect_column_groups(box: dict[str, Any], page_width: float) -> list[list[dict[str, Any]]]:
-    """检测单个版式块内部是否含多栏，返回按栏分组的（重组）textlines。
+    """Detect several columns inside one layout block and return the (rebuilt) text lines grouped by column.
 
-    版式引擎偶尔把整片多栏区域并成一个 box（实测 XPeng 第 6 页、BYD 第 27 页），
-    更严重的情形是它把左右两栏并进**同一条 textline**（实测 Lucid 第 4 页 CEO
-    致辞：每行起点都是左栏起点 604，右栏内容作为该行的后续 span），此时按
-    「行起点」分组永远无法分栏，最终产出
+    The layout engine sometimes merges a whole multi-column area into one box (seen on XPeng p6 and BYD p27).
+    Worse, it may merge the left and right columns into the **same text line** (seen in the CEO letter on Lucid p4:
+    every line starts at the left column's x = 604, and the right column's text follows as later spans of that line).
+    Grouping by line start can then never separate the columns, and the output ends up as
     `...ensuring a robust governance The next pages outline our first steps in our
-    structure to support our efforts.` 这类跨栏交错，伪造词邻接。
+    structure to support our efforts.`, interleaving across columns that creates false word neighbours.
 
-    因此按 **span** 而非 textline 归栏：
-    1. 把 box 内所有 span 投影到横轴，求 1pt 精度占用图；
-    2. 取零占用带作为候选 gutter；
-    3. 关键判据不是 gutter 宽度，而是有多少行**跨越**该 gutter（左右两侧同时
-       有 span）。正常单栏段落右边界参差不齐，只会在右侧留白，不会反复出现
-       「右侧另有文字块」；真正的分栏才会被多行跨越。故要求跨越行数 ≥3。
-    4. 每栏内按 (y, x) 重排并重建 textline，各栏独立成文。
+    Columns are therefore assigned by **span**, not by text line:
+    1. Project all spans in the box onto the x axis and build an occupancy map at 1 pt resolution.
+    2. Treat bands with zero occupancy as candidate gutters.
+    3. The key test is not the width of a gutter but how many lines **cross** it (with spans on both sides).
+       An ordinary single-column paragraph with a ragged right edge only leaves blank space on the right and never repeatedly
+       shows another block of text further right. Only real columns are crossed by many lines, so at least three crossing lines are required.
+    4. Inside each column, re-sort by (y, x) and rebuild the text lines, so that each column becomes its own text.
 
-    宽度门槛因此可以放宽到 1.2% 页宽（Lucid p4 的 gutter 仅 26pt/1920=1.35%，
-    旧的 4% 阈值会漏检），由跨越判据承担防误切职责。
+    This is why the width threshold can be relaxed to 1.2% of the page width (the gutter on Lucid p4 is only 26 pt / 1920 = 1.35%,
+    which the old 4% threshold missed). The crossing test is what prevents false splits.
     """
     lines = [l for l in (box.get("textlines") or []) if (l.get("spans") or [])]
     if len(lines) < 8:
@@ -635,31 +635,31 @@ def detect_column_groups(box: dict[str, Any], page_width: float) -> list[list[di
 
 
 def box_lines(box: dict[str, Any]) -> list[str]:
-    """从 span 坐标恢复行文本。
+    """Rebuild line text from span coordinates.
 
-    PDF 中相邻 span 不一定自带尾空格。旧实现直接拼接，曾产生
-    `after-salesservicenetwork...`。现在依据横向间距补空格，并记入修复日志。
+    Neighbouring spans in a PDF do not always carry a trailing space. The old code joined them directly and produced
+    `after-salesservicenetwork...`. Spaces are now added from the horizontal gaps, and each addition is logged.
     """
     return lines_from_textlines(box.get("textlines") or [])
 
 
 def span_reading_order(span: dict[str, Any]) -> tuple[int, int, float]:
-    """span 在 PDF 原始文本层中的阅读顺序键。
+    """Reading-order key of a span in the original PDF text layer.
 
-    版式引擎会把原本属于不同原始行的 span 并进同一条 textline。若只按 x 排序，
-    这些 span 会互相插入。NIO p61 实测：同一 textline 内含
+    The layout engine can merge spans from different source lines into one text line. Sorting by x alone
+    then interleaves them. On NIO p61, one text line contained
 
         (x= 48, block=1, line= 9) 'Assessment and'
         (x= 48, block=1, line=10) 'reporting period. This further unifies...'
         (x=106, block=1, line= 9) 'Management Process '
         (x=181, block=1, line= 9) 'during the '
 
-    按 x 排序会把 line 10 插进 line 9 中间，产出
+    Sorting by x inserted line 10 into the middle of line 9, giving
     `the Energy Assessment and reporting period.` /
     `This further unifies the factories' energy Management Process during the
-    management processes...`——句子被拦腰交换。按 (block, line, x) 排序即恢复
+    management processes...`, so the two sentences were swapped halfway through. Sorting by (block, line, x) restores the order.
     `Assessment and Management Process during the reporting period. This further
-    unifies the factories' energy ...`。
+    unifies the factories' energy ...`.
     """
     bbox = span.get("bbox") or [0.0]
     return (int(span.get("block") or 0), int(span.get("line") or 0), float(bbox[0]))
@@ -688,14 +688,14 @@ def lines_from_textlines(textlines: list[dict[str, Any]]) -> list[str]:
     return lines
 
 
-# 明确的乱码信号：替换字符、C1 控制区、私用区
+# Clear signs of garbled text: replacement characters, the C1 control range and the private use area
 GARBLED_SIGNAL_RE = re.compile(r"[\ufffd\u0080-\u009f\ue000-\uf8ff\u0000-\u0008\u000b\u000c\u000e-\u001f]")
-# 允许保留的非 ASCII：CJK、度数符号、常用标点、日式列表符号
+# Non-ASCII characters that may stay: CJK characters, the degree sign, common punctuation and Japanese-style list markers
 ALLOWED_NON_ASCII_RE = re.compile(r"[\u4e00-\u9fff\u3040-\u30ff\u00b0\u00b7\u2010-\u203a\u30fb\uff0c\u2022\u00a9\u00ae\u2122]")
 
 
 def _garbled_token(token: str) -> bool:
-    """判断单个空白分片是否为乱码。"""
+    """Decide whether a single whitespace-separated piece is garbled."""
     if GARBLED_SIGNAL_RE.search(token):
         return True
     chars = [c for c in token if not c.isspace()]
@@ -703,17 +703,17 @@ def _garbled_token(token: str) -> bool:
         return False
     odd = [c for c in chars
            if ord(c) > 127 and not ALLOWED_NON_ASCII_RE.match(c) and not c.isdigit()]
-    # 分片中异常非 ASCII 字符占比过半 → 乱码
+    # More than half of the piece consists of unusual non-ASCII characters, so it is garbled
     return len(odd) / len(chars) >= 0.5 and len(odd) >= 2
 
 
 def strip_garbled_runs(text: str) -> str:
-    """清除字体编码错乱产生的乱码片段。
+    """Remove garbled pieces caused by broken font encodings.
 
-    XPeng 报告部分页面使用非标准字体编码，提取出 `����` 或
-    `\\x0eÇÀÀ\\x99Á...` 之类的片段。这类片段不是任何语言的文本，会污染词表；
-    但同一行的正常英文与合法非 ASCII（°C、中文、‒）必须保留，
-    故按空白分片逐片判断，而非整行删除或按字符类粗暴过滤。
+    Some pages of the XPeng report use non-standard font encodings and yield pieces such as `����` or
+    `\\x0eÇÀÀ\\x99Á...`. These are not text in any language and would pollute the word list.
+    Normal English and legitimate non-ASCII characters on the same line (°C, Chinese characters, ‒) must be kept,
+    so each whitespace-separated piece is judged on its own instead of deleting the line or filtering by character class.
     """
     tokens = text.split()
     if not tokens:
@@ -726,16 +726,16 @@ def strip_garbled_runs(text: str) -> str:
     return cleaned if len(words(cleaned)) >= 2 else ""
 
 
-# 已知合法的驼峰/大小写混排，不计入「块粘连」证据
+# Known legitimate camel-case and mixed-case names, which do not count as evidence of blocks run together
 CAMEL_WHITELIST_RE = re.compile(
     r"\b(?:XPeng|XPENG|iPhone|eVTOL|eV|iOS|kWh|MWh|GWh|tCO|gCO|CO2e|IoT|AIoT|"
     r"NIO|BYD|ESG|GRI|TCFD|IFRS|ISO|UNGC|CSRD|HKEx|SBTi|NCAP|R&D|"
-    # 产品/品牌驼峰名：BYD SkyShuttle/SkyRail、Tesla Powerwall 等。
-    # 不加会把 SkyShuttle 的 'yS' 当作块粘连，导致正常页被误判为版式失败页
-    # （实测 BYD 第 120 页 10 处「粘连」全部来自 SkyShuttle）。
+    # Camel-case product and brand names: BYD SkyShuttle/SkyRail, Tesla Powerwall and so on.
+    # Without them, the 'yS' in SkyShuttle would count as blocks run together, and normal pages would be flagged as layout failures
+    # (all 10 "joins" on BYD p120 came from SkyShuttle).
     r"SkyShuttle|SkyRail|SkyTrain|SkyPass|PowerWall|Powerwall|Megapack|Powerpack|"
     r"MegaCharger|Supercharger|CyberTruck|Cybertruck|SkyWell|BladeBattery|DiPilot|DiSus|"
-    r"[A-Z][a-z]+(?:[A-Z][a-z]+)+|"          # 通用驼峰专名（两段以上）
+    r"[A-Z][a-z]+(?:[A-Z][a-z]+)+|"          # general camel-case proper names (two or more parts)
     r"[A-Z]{2,}s?|[A-Z]\d+)\b"
 )
 BLOCK_GLUE_RE = re.compile(r"[a-z][A-Z]")
@@ -743,15 +743,15 @@ BULLET_RE = re.compile(r"[·•・▪●]")
 
 
 def layout_failure_signals(texts: list[str]) -> dict[str, Any]:
-    """检测「同一水平带上多个独立文本框被并入一行」的版式解析失败。
+    """Detect layout failures in which several separate text boxes on one horizontal band were merged into one line.
 
-    两类证据：
-    1. 多条目拼接：单句内出现 ≥2 个项目符号 —— 独立条目本应各自成句，
-       出现在同一句说明不同文本框的内容被交错拼接（实测 XPeng 第 6 页）。
-    2. 字符级粘连：'AreasManagement' 式小写紧接大写（驼峰专名已白名单排除）。
-       注意该信号会被「按坐标补空格」步骤消除，故只作辅助证据，不能单独依赖。
+    Two kinds of evidence:
+    1. Joined list items: two or more bullet markers inside one sentence. Separate items should each form their own sentence,
+       so finding them in one sentence means that text from different boxes was interleaved (seen on XPeng p6).
+    2. Characters run together: a lower-case letter directly followed by a capital, as in 'AreasManagement' (camel-case names are whitelisted).
+       This signal disappears once spaces are added from coordinates, so it is only supporting evidence and cannot be relied on alone.
 
-    这类页面的词序与邻接关系不可信，会伪造搭配，不能进入分析语料。
+    On such pages the word order and word neighbours cannot be trusted. They would create false collocations, so they cannot enter the analysis corpus.
     """
     total_words = sum(len(words(t)) for t in texts)
     multi_bullet = [t for t in texts if len(BULLET_RE.findall(t)) >= 2]
@@ -785,15 +785,15 @@ def layout_failure_signals(texts: list[str]) -> dict[str, Any]:
 
 
 def is_layout_failure(sig: dict[str, Any]) -> bool:
-    """判定阈值：多条目拼接是主判据，字符粘连为辅。
+    """Thresholds: joined list items are the main test, characters run together a supporting one.
 
-    要求至少 5 句以避免短页误判；比例 ≥15% 表明该页普遍性交错，
-    而非个别条目内的合法多符号列举。
+    At least five sentences are required so that short pages are not misjudged. A share of 15% or more shows interleaving across the page
+    rather than a legitimate list with several markers inside one item.
     """
     if sig["sentences"] >= 5 and sig["multi_bullet_sentences"] >= 2 and sig["multi_bullet_ratio"] >= 0.15:
         return True
-    # Tesla p177 型：两栏被交错拼接后，同一段落部分重复，同时产生大量
-    # 小写行首碎片；两信号组合在六份现有语料中只命中该页。
+    # Tesla p177 pattern: after two columns are interleaved, part of a paragraph repeats and many fragments
+    # start in lower case. The two signals together match only this page among the six reports.
     if (sig["sentences"] >= 8 and sig["lowercase_start_ratio"] >= 0.20
             and sig["near_duplicate_pairs"] >= 1):
         return True
@@ -808,22 +808,22 @@ def clean_plain_text(text: str) -> str:
     text = re.sub(r"[ \t]+", " ", text)
     text = re.sub(r"\s*\n\s*", " ", text)
     text = repair_internal_spacing(text.strip(" \t|#"))
-    # 乱码清除必须在所有入口统一执行，尤其是 table_cells；旧版仅在正文路径
-    # 调用，导致 XPeng 表格单元格残留 73 个替换字符。
+    # Garbled-text removal must run at every entry point, especially table_cells. The old version called it only on the body-text path,
+    # which left 73 replacement characters in XPeng table cells.
     return strip_garbled_runs(text)
 
 
 def sentence_like(text: str) -> bool:
-    """判断表格/图片 OCR 文本是否为叙述句，而非数据或标签。
+    """Decide whether table or OCR text is a running sentence rather than data or a label.
 
-    停用词密度只作为 prose-vs-label 判据，不作为语法完整性的唯一判据。
+    Function-word density only tells prose from labels. It is not the only test of whether a sentence is grammatical.
     """
     ws = words(text)
     if len(ws) < 3 or alpha_ratio(text) < 0.58:
         return False
     terminal = bool(re.search(r"[.!?;:]\s*$", text))
     has_function_words = stopword_density(text) >= 0.16
-    # 3-4 词短块必须有句末标点和功能词；更长块满足其一即可。
+    # Blocks of three or four words need both final punctuation and function words. Longer blocks need one of the two.
     if len(ws) < 5:
         return terminal and has_function_words
     return has_function_words or terminal
@@ -833,11 +833,11 @@ TABLE_TERMINAL_RE = re.compile(r"[.!?;:][\"')\]]?$")
 
 
 def table_prose_sentences(text: str) -> list[str]:
-    """从表格单元格中只保留完整叙述句，排除数字、指标名和标签。
+    """Keep only complete running sentences from table cells and drop numbers, indicator names and labels.
 
-    用户规则是「删表格数据，保留完整句子」。旧版只看停用词密度，导致
-    `Package material consumption for whole vehicle` 因含 for 而误入 no_tables。
-    现在必须同时满足：≥5词、句末标点、停用词密度≥0.12、字母占比≥0.58。
+    The rule is to drop table data but keep complete sentences. The old version looked only at function-word density, so
+    `Package material consumption for whole vehicle` entered no_tables just because it contains "for".
+    A sentence must now meet all four conditions: at least 5 words, final punctuation, function-word density of at least 0.12 and a letter share of at least 0.58.
     """
     kept = []
     for sentence in segment_paragraph(clean_plain_text(text)):
@@ -852,7 +852,7 @@ def table_prose_sentences(text: str) -> list[str]:
 
 
 def segment_paragraph(text: str, *, heading: bool = False) -> list[str]:
-    """正文按句输出；标题单独保留。"""
+    """Output body text sentence by sentence and keep headings on their own."""
     text = clean_plain_text(text)
     if not text or PAGE_NUMBER_RE.fullmatch(text):
         return []
@@ -899,11 +899,11 @@ def ocr_region(
     dpi: int = 300,
     psm: int = 6,
 ) -> dict[str, Any]:
-    """仅 OCR 指定版式区域；返回全文、段落、置信度与词数。
+    """Run OCR on the given layout region only and return the text, paragraphs, confidence and word count.
 
-    Tesseract 的 TSV 给出每个词的 block / paragraph / line 与坐标。除总体文本外，
-    这里保留段落边界；后续只从高置信度段落中选完整叙述句，避免把标题、目录、
-    图表刻度与正文拼成一条假句。
+    Tesseract's TSV output gives the block, paragraph, line and coordinates of each word. Besides the full text,
+    paragraph boundaries are kept here. Later steps take complete running sentences only from confident paragraphs, so that headings, contents lists
+    and chart scales are not joined with body text into a false sentence.
     """
     page = doc[page_index]
     rect = pymupdf.Rect(bbox) & page.rect
@@ -987,16 +987,16 @@ DANGLING_TAIL_RE = re.compile(
 
 
 def drop_truncated_prefix_duplicates(items: list[str]) -> list[str]:
-    """删除因 box 边界重叠而产生的截断前缀碎片。
+    """Delete truncated prefix fragments caused by overlapping box boundaries.
 
-    PyMuPDF4LLM 的 box 划分偶尔重叠：BYD p27 的 BOX20 末行捕获了
-    `With these updates, we have formulated the`（该句左栏首行），而 BOX22
-    又完整给出同一句两行。分栏后前者成为悬挂碎片，与完整句构成重复。
+    PyMuPDF4LLM's boxes sometimes overlap. On BYD p27, the last line of BOX20 captured
+    `With these updates, we have formulated the` (the first line of that sentence in the left column), while BOX22
+    gives the same sentence in full on two lines. After column splitting, the former becomes a dangling fragment that duplicates the full sentence.
 
-    判据取三重交集，确保不误删标题（标题短且不以功能词结尾）：
-    1. 词数 ≥5；
-    2. 不以句末标点收尾，且以悬挂功能词结尾；
-    3. 是同页另一条更长文本的前缀。
+    Three conditions must all hold, so that headings are never deleted by mistake (headings are short and do not end in a function word):
+    1. at least 5 words,
+    2. no final punctuation, ending in a dangling function word,
+    3. a prefix of another, longer text on the same page.
     """
     prepared = [(pattern(x), x) for x in items]
     drop: set[int] = set()
@@ -1025,7 +1025,7 @@ VERIFIED_PAGE_CORRECTIONS = {
 
 
 def apply_verified_page_corrections(doc_id: str, page: int, items: list[str]) -> list[str]:
-    """只执行经 PDF 视觉对照确认、且由文档与页码共同限定的精确修复。"""
+    """Apply only exact fixes confirmed against the PDF and limited to a given document and page."""
     corrections = VERIFIED_PAGE_CORRECTIONS.get((doc_id, page), ())
     if not corrections:
         return items
@@ -1041,11 +1041,11 @@ def apply_verified_page_corrections(doc_id: str, page: int, items: list[str]) ->
 
 
 def likely_duplicate(candidate: str, existing: list[str]) -> bool:
-    """保守去重：短标题出现在长句中，不得据此删除整句。
+    """Cautious de-duplication: a short heading that also appears inside a long sentence must not cause the sentence to be deleted.
 
-    旧判据只要短串是长串子串就判重复，曾把包含 `32 million metric` 的完整
-    OCR 正文整句删除。现在要求子串覆盖较短/较长文本长度比 ≥70%，或整体
-    SequenceMatcher 相似度 ≥90%。
+    The old test counted any short string inside a longer one as a duplicate, and once deleted a complete OCR sentence
+    because it contained `32 million metric`. Now the shorter text must cover at least 70% of the longer one, or the two texts
+    must reach a SequenceMatcher similarity of at least 90%.
     """
     p = pattern(candidate)
     if not p:
@@ -1069,9 +1069,9 @@ OCR_CO2E_RE = re.compile(r"\bCO(?:c|q|Q|z)?z?e\b", re.I)
 
 
 def clean_ocr_artifacts(text: str) -> str:
-    """修正常见、可无歧义判定的 OCR 字形错误；全部修复仍会进入 repairs 日志。"""
+    """Fix common OCR glyph errors that can be identified without ambiguity. Every fix is still written to the repairs log."""
     before = text
-    # Tesla 字体中的「2」反复被识别成 z / c / q：COze、COcze、COQ ze → CO2e
+    # In the Tesla font the digit 2 is repeatedly read as z, c or q: COze, COcze, COQ ze -> CO2e
     text = re.sub(r"\bCOQ\s+ze\b", "CO2e", text, flags=re.I)
     text = OCR_CO2E_RE.sub("CO2e", text)
     text = re.sub(r"\bcarbon dioxide \(COz\)", "carbon dioxide (CO2)", text, flags=re.I)
@@ -1085,9 +1085,9 @@ def clean_ocr_artifacts(text: str) -> str:
     text = re.sub(r"\bGigafactory Teas\b", "Gigafactory Texas", text, flags=re.I)
     text = re.sub(r"\bLC As\b", "LCAs", text)
     text = re.sub(r"\bIS 1404([04])\b", r"ISO 1404\1", text)
-    # Tesla p187 中 useful 被稳定识别为 `use tul`；该搭配在此语境无歧义。
+    # On Tesla p187 "useful" is consistently read as `use tul`. In this context the correction is unambiguous.
     text = re.sub(r"\buse\s+tul\b", "useful", text, flags=re.I)
-    # 清除图表 OCR 产生的孤立竖线与「3:」式坐标噪声，不碰正常数字。
+    # Remove stray vertical bars and axis noise such as "3:" left by OCR of charts, without touching ordinary numbers.
     text = re.sub(r"\s+[|_=<>]+\s+", " ", text)
     text = re.sub(r"\s+\d:\s+", " ", text)
     text = clean_plain_text(text)
@@ -1097,12 +1097,12 @@ def clean_ocr_artifacts(text: str) -> str:
 
 
 def strict_ocr_sentences(result: dict[str, Any], existing: list[str]) -> list[str]:
-    """从 OCR 区域中只保留高置信度的完整叙述句。
+    """Keep only confident, complete running sentences from an OCR region.
 
-    标题、目录、图例和数字表即使 OCR 置信度很高也不进入语料。阈值为项目预设
-    质控线：段落均值置信度 ≥91.5、句末标点、≥8 词、停用词密度 ≥0.15、
-    字母字符占比 ≥0.82、数字词占比 ≤25%。0.15 是为保留含大量专名的技术句
-    （如 NEDC/WLTP/EPA 句实测密度 0.171）；其余四道条件继续阻断图表标签。
+    Headings, contents lists, legends and tables of figures stay out even when OCR is confident about them. The thresholds are quality-control lines
+    set for this project: mean paragraph confidence of at least 91.5, final punctuation, at least 8 words, function-word density of at least 0.15,
+    a letter share of at least 0.82 and no more than 25% numeric words. The value 0.15 keeps technical sentences full of names
+    (a sentence about NEDC/WLTP/EPA measured 0.171). The other four conditions still keep chart labels out.
     """
     accepted = []
     paragraphs = result.get("paragraphs") or [{
@@ -1130,7 +1130,7 @@ def strict_ocr_sentences(result: dict[str, Any], existing: list[str]) -> list[st
 
 
 def page_has_full_background_image(page: pymupdf.Page) -> bool:
-    """页面是否含覆盖 ≥80% 的位图背景（Tesla 混合 PDF 的栅格正文载体）。"""
+    """Does the page have a bitmap background covering at least 80% of it (the carrier of image-only text in the mixed Tesla PDF)?"""
     page_area = max(1.0, page.rect.width * page.rect.height)
     for image in page.get_images(full=True):
         try:
@@ -1142,11 +1142,11 @@ def page_has_full_background_image(page: pymupdf.Page) -> bool:
 
 
 def stitch_across_boxes(items: list[str]) -> list[str]:
-    """把跨版式块被切断的同一句子重新接上。
+    """Rejoin sentences that were cut where one layout block ends and the next begins.
 
-    版式引擎会把一段正文按视觉区域切成多个 box，分句在 box 内独立进行，
-    于是 `...which has laid a solid` 与 `foundation for NIO...` 会成为两句。
-    判据：前句无句末标点，后句以小写字母开头；标题类短行不参与。
+    The layout engine cuts a paragraph into several boxes by visual area, and sentences are split inside each box,
+    so `...which has laid a solid` and `foundation for NIO...` become two sentences.
+    Test: the first part has no final punctuation and the second starts with a lower-case letter. Short heading-like lines are excluded.
     """
     if not items:
         return items
@@ -1157,16 +1157,16 @@ def stitch_across_boxes(items: list[str]) -> list[str]:
         next_lower = bool(re.match(r"^['\u2019]?[a-z]", nxt.strip()))
         heading_words = words(prev)
         titlecase_ratio = sum(w[:1].isupper() for w in heading_words) / max(len(heading_words), 1)
-        # 标题须短且大部分实词为 Title Case/全大写；不能仅按词数判断，
-        # 否则 `The service model laid a solid`（6词句子碎片）会被误当标题。
+        # A heading must be short, with most content words in title case or capitals. Word count alone is not enough,
+        # otherwise `The service model laid a solid` (a six-word fragment of a sentence) would be taken for a heading.
         prev_is_heading = (
             len(heading_words) <= 10
             and (titlecase_ratio >= 0.60 or (prev.isupper() and len(heading_words) >= 2))
         )
-        # 标题跨 box 换行：XPeng p27 的 `Rights Protection and` 与
-        # `Infringement Dispute Response` 是同一 block 的相邻 box，后句首字母
-        # 大写故不满足 next_lower。以「前句悬挂功能词结尾」为触发信号——正常
-        # 标题不会以 and/of/for 收尾，该形态本身即断裂证据。
+        # Headings broken across boxes: on XPeng p27, `Rights Protection and` and
+        # `Infringement Dispute Response` are neighbouring boxes of the same block, and the second starts with a capital,
+        # so next_lower does not hold. The trigger is a first part ending in a dangling function word. Normal
+        # headings do not end in and, of or for, so this form is itself evidence of a break.
         next_words = words(nxt)
         heading_continuation = (
             prev_open
@@ -1289,7 +1289,7 @@ def tesla_2025_ocr_replacement(
 
 
 def detect_repeated_marginal_boxes(pages: list[dict[str, Any]]) -> tuple[set[tuple[int, int]], dict[str, int]]:
-    """找跨页重复的顶部/底部版式块，返回要删除的 (page_idx, box_idx)。"""
+    """Find top and bottom layout blocks that repeat across pages and return the (page_idx, box_idx) pairs to delete."""
     occurrence: dict[str, list[tuple[int, int, str, str]]] = collections.defaultdict(list)
     for pi, page in enumerate(pages):
         h = float(page.get("height") or 1)
@@ -1332,15 +1332,15 @@ def file_sha256(path: Path) -> str:
 
 
 def load_manual_override(config: DocumentConfig, page_no: int) -> dict[str, Any] | None:
-    """读取经两次核验批准的人工覆盖页；草稿永远不会自动进入语料。
+    """Read manual override pages approved after two checks. Drafts never enter the corpus automatically.
 
-    目录约定：
+    Folder layout:
       01_Source/manual_overrides/approved/<doc_id>/p024_with_tables.txt
       01_Source/manual_overrides/approved/<doc_id>/p024_no_tables.txt
       01_Source/manual_overrides/approved/<doc_id>/p024_approval.json
 
-    approval.json 必须明确 approved=true，且两个版本文件都存在。no_tables 文件可为空
-    （如 NIO p32 只有矩阵标签）；with_tables 应包含按单元格/阅读顺序恢复的文本。
+    approval.json must say approved=true, and both version files must exist. The no_tables file may be empty
+    (NIO p32, for example, contains only matrix labels). with_tables should hold the text restored by cell and reading order.
     """
     folder = MANUAL_OVERRIDE_ROOT / config.doc_id
     prefix = f"p{page_no:03d}"
@@ -1353,14 +1353,14 @@ def load_manual_override(config: DocumentConfig, page_no: int) -> dict[str, Any]
     if approval.get("approved") is not True:
         return None
     if approval.get("doc_id") != config.doc_id or int(approval.get("page", -1)) != page_no:
-        raise ValueError(f"人工覆盖 metadata 不匹配: {approval_file}")
+        raise ValueError(f"Manual override metadata does not match: {approval_file}")
     if not with_file.exists() or not no_file.exists():
-        raise FileNotFoundError(f"已批准覆盖缺少文本文件: {folder}/{prefix}_*.txt")
+        raise FileNotFoundError(f"Approved override is missing a text file: {folder}/{prefix}_*.txt")
 
     def load_lines(path: Path) -> list[str]:
         text = normalize_unicode(path.read_text(encoding="utf-8"))
         if "�" in text:
-            raise ValueError(f"人工覆盖含替换字符: {path}")
+            raise ValueError(f"Manual override contains replacement characters: {path}")
         return [re.sub(r"\s+", " ", line).strip() for line in text.splitlines() if line.strip()]
 
     def display_path(path: Path) -> str:
@@ -1389,7 +1389,7 @@ def process_document(config: DocumentConfig) -> dict[str, Any]:
     print(f"\n[{started:%H:%M:%S}] START {config.doc_id}: {config.path.name}", flush=True)
     REPAIR_COUNTS.clear()
     REPAIR_EXAMPLES.clear()
-    # 禁用自动 OCR：原生文本绝不重复 OCR；需要 OCR 的图片区域由本脚本局部处理。
+    # Automatic OCR is switched off: native text is never recognized again, and image regions that need OCR are handled locally by this script.
     raw_json = pymupdf4llm.to_json(
         str(config.path), show_progress=False, use_ocr=False, force_text=True
     )
@@ -1438,7 +1438,7 @@ def process_document(config: DocumentConfig) -> dict[str, Any]:
                 page_log["marginal_boxes_removed"] += 1
                 continue
             if cls in {"page-header", "page-footer"}:
-                # 唯一且未进入 repeated_remove 的页眉/页脚仍删除，但完整写入日志。
+                # Headers and footers that are unique and not in repeated_remove are still removed, but fully logged.
                 page_log[f"{cls}_removed"] += 1
                 continue
 
@@ -1458,8 +1458,8 @@ def process_document(config: DocumentConfig) -> dict[str, Any]:
                 continue
 
             if cls == "picture":
-                # Tesla 先 OCR 布局引擎明确圈出的图片区（p5 的两段正文可精准裁剪）；
-                # 低文本整页稍后另走三栏 OCR。两路结果用保守模糊去重合并。
+                # For Tesla, the image regions marked by the layout engine are recognized first (the two paragraphs on p5 can be cropped exactly).
+                # Whole pages with little text go through three-column OCR later. The two results are merged with cautious fuzzy de-duplication.
                 should_ocr = config.ocr_mode == "all_picture_regions"
                 if config.ocr_mode == "low_text_pictures" and pi < len(native_chars):
                     should_ocr = native_chars[pi] < 100
@@ -1487,8 +1487,8 @@ def process_document(config: DocumentConfig) -> dict[str, Any]:
                     page_log["ocr_regions_rejected"] += 1
                 continue
 
-            # 版式块内部可能含多栏（引擎偶发合并），按栏切分后各栏独立成文，
-            # 否则不同栏的行会交错拼接、伪造词邻接关系。
+            # A layout block may contain several columns (the engine sometimes merges them). Each column is split off and treated as its own text,
+            # otherwise lines from different columns would interleave and create false word neighbours.
             column_groups = detect_column_groups(box, float(page.get("width") or 1))
             texts = []
             for group in column_groups:
@@ -1500,7 +1500,7 @@ def process_document(config: DocumentConfig) -> dict[str, Any]:
                 page_log["boxes_split_into_columns"] += 1
             text = " ".join(texts) if len(texts) == 1 else None
             if text is None and texts:
-                # 多栏：每栏单独走后续处理，不拼成一行
+                # Several columns: each column goes through the later steps on its own instead of being joined into one line
                 heading_multi = False
                 for col_text in texts:
                     col_text = strip_garbled_runs(col_text)
@@ -1517,12 +1517,12 @@ def process_document(config: DocumentConfig) -> dict[str, Any]:
             if not text:
                 page_log["garbled_text_removed"] += 1
                 continue
-            # 英文语料：高比例非拉丁字符且几乎无英文词的块移除。
+            # English corpus: blocks with a high share of non-Latin characters and almost no English words are removed.
             if len(words(text)) < 2 and alpha_ratio(text) < 0.45:
                 page_log["non_english_or_noise_removed"] += 1
                 continue
-            # 图例/图片内导航残留：@ 与 © 是 Tesla 等报告把图标符号编进文本层的产物，
-            # 一行出现 ≥2 个即为「@标签1 @标签2」式图例，不是正文。
+            # Leftover legend and in-image navigation: @ and © are icon symbols that Tesla and other reports put into the text layer.
+            # Two or more of them on one line mark a legend such as "@label1 @label2", not body text.
             if text.count("@") + text.count("©") >= 2:
                 page_log["symbol_label_lines_removed"] += 1
                 continue
@@ -1532,11 +1532,11 @@ def process_document(config: DocumentConfig) -> dict[str, Any]:
             no_parts.extend(segs)
             page_log[f"{cls}_boxes_kept"] += 1
 
-        # Tesla 2024 是混合型 PDF：几乎每页有一张整页位图，部分正文只存在于
-        # 位图中而不在原生文本层。局部 picture-box OCR 会漏掉这些正文（实测
-        # p10/p20/p26/p28/p54/p66/p106/p108/p167/p187）。对原生文本不足 500
-        # 字符且有整页位图的页面，按左/中/右三栏裁剪 OCR，避免整页 OCR 把三栏
-        # 横向交错。只把 strict_ocr_sentences 通过的完整高置信度句子补入。
+        # Tesla 2024 is a mixed PDF: almost every page carries a full-page bitmap, and some body text exists only
+        # in the bitmap, not in the native text layer. Local picture-box OCR misses this text (seen on
+        # p10/p20/p26/p28/p54/p66/p106/p108/p167/p187). Pages with fewer than 500 native characters
+        # and a full-page bitmap are cropped into left, middle and right columns for OCR, so that whole-page OCR does not interleave the columns.
+        # Only complete, confident sentences that pass strict_ocr_sentences are added.
         if (
             config.ocr_mode == "all_picture_regions"
             and native_chars[pi] < 500
@@ -1546,8 +1546,8 @@ def process_document(config: DocumentConfig) -> dict[str, Any]:
             column_ranges = ((0.00, 0.345), (0.325, 0.675), (0.655, 1.00))
             for column_no, (left, right) in enumerate(column_ranges, 1):
                 bbox = (W * left, H * 0.04, W * right, H * 0.96)
-                # PSM 3 会按自然段分组；实测在 Tesla p54 的双段正文上明显优于
-                # PSM 6（后者把图片噪声插进正文）与 PSM 11（逐行碎裂）。
+                # PSM 3 groups text by paragraph. On the two paragraphs of Tesla p54 it worked clearly better than
+                # PSM 6 (which put image noise into the text) and PSM 11 (which broke the text into single lines).
                 result = ocr_region(doc, pi, bbox, dpi=400, psm=3)
                 result.update({
                     "source": "low_native_page_column", "page": page_no,
@@ -1572,7 +1572,7 @@ def process_document(config: DocumentConfig) -> dict[str, Any]:
         with_parts = stitch_across_boxes(with_parts)
         no_parts = stitch_across_boxes(no_parts)
 
-        # 页面内部精确去重：布局引擎有时会把同一文本层和图片 OCR 同时返回。
+        # Exact de-duplication within a page: the layout engine sometimes returns both the text layer and the image OCR of the same text.
         def dedupe(items: list[str]) -> list[str]:
             seen, out = set(), []
             for item in items:
@@ -1586,15 +1586,15 @@ def process_document(config: DocumentConfig) -> dict[str, Any]:
         no_parts = apply_verified_page_corrections(
             config.doc_id, page_no, drop_truncated_prefix_duplicates(dedupe(no_parts)))
 
-        # 版式解析失败页的判定与隔离：
-        # 若一页的「块粘连密度」过高，说明引擎把多个独立文本框并入同一行，
-        # 该页文本的词序与邻接已不可信（会伪造搭配），不能进入分析语料。
-        # 这类页面从语料中排除，但完整记入日志与单独清单，供人工复核，
-        # 不做静默丢弃。
+        # Detecting and isolating pages whose layout could not be parsed:
+        # if a page has too many blocks run together, the engine has merged several separate text boxes into one line,
+        # and the word order and neighbours on that page can no longer be trusted (they would create false collocations).
+        # Such pages are kept out of the corpus but fully recorded in the log and in a separate list for manual review.
+        # Nothing is dropped silently.
         signals = layout_failure_signals(no_parts)
-        # 人工覆盖不仅用于自动判定为版式失败的页面，也用于普通抽检发现的
-        # 局部漏字、错序、脚注污染或表格单元格串行。只要 approved metadata
-        # 合法，即以人工核验版本替换整页；否则才按自动失败判据决定是否隔离。
+        # Manual overrides are used not only for pages flagged as layout failures but also for problems found in the ordinary sample,
+        # such as missing words, wrong order, footnote contamination or table cells mixed into the text. If the approval metadata
+        # is valid, the whole page is replaced with the checked version. Otherwise the automatic failure test decides whether to isolate it.
         override = load_manual_override(config, page_no)
         if override is not None:
             with_parts = override["with_tables"]
@@ -1646,7 +1646,7 @@ def process_document(config: DocumentConfig) -> dict[str, Any]:
         "with_tables_words": len(words(with_text)),
         "no_tables_words": len(words(no_text)),
     }
-    # Counter 不能直接 JSON 化。
+    # A Counter cannot be turned into JSON directly.
     log["counters"] = dict(log["counters"])
     log["repairs"] = {"counts": dict(REPAIR_COUNTS), "examples": dict(REPAIR_EXAMPLES)}
     log_path = LOG_ROOT / f"prepare_{config.doc_id}.json"
@@ -1665,7 +1665,7 @@ def select_documents(args) -> list[DocumentConfig]:
     if args.doc:
         selected = [d for d in DOCUMENTS if d.doc_id == args.doc]
         if not selected:
-            raise SystemExit(f"未知 doc_id: {args.doc}")
+            raise SystemExit(f"Unknown doc_id: {args.doc}")
         return selected
     return [d for d in DOCUMENTS if d.set_name == args.set]
 
@@ -1673,7 +1673,7 @@ def select_documents(args) -> list[DocumentConfig]:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--set", choices=("primary", "robustness"), default="primary")
-    ap.add_argument("--doc", help="只处理指定 doc_id")
+    ap.add_argument("--doc", help="process only this doc_id")
     args = ap.parse_args()
 
     configs = select_documents(args)

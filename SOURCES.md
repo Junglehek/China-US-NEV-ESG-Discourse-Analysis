@@ -1,6 +1,6 @@
 # Report sources
 
-The reports are not included in this repository. Download them from the official web pages below and save them under `01_Source/pdf/` with the file names shown. The SHA-256 checksums identify the exact files used in the study.
+We do not redistribute the reports. You can download them from the companies' own web pages listed below. Save each file under `01_Source/pdf/` with the name shown, and compare its SHA-256 checksum with ours to make sure it is the same file we used.
 
 | Set | Report | Official web page | File name | SHA-256 |
 |---|---|---|---|---|
@@ -16,4 +16,4 @@ The reports are not included in this repository. Download them from the official
 | 2025 | Tesla Impact Report '25 (Extended Version) | https://www.tesla.com/impact | `2025_robustness/2025-extended-version-tesla-impact-report.pdf` | `a1964e60c043bdabdb70bb20986762315b02784e26f9523234ef89bb26edf2e9` |
 | 2025 | Rivian 2025 Impact Report | https://rivian.com/scaling-responsibly#reporting | `2025_robustness/Rivian_2025_Impact_Report.pdf` | `a961d9d82667993888dc1f4e12b76291b125b5c7669723824380cc3c66e0045a` |
 
-Companies may replace a report on their web pages with a revised version. Check the checksum with `shasum -a 256 <file>` (macOS) or `sha256sum <file>` (Linux).
+Companies sometimes replace a report with a revised version, so a file downloaded today may differ from ours. You can compute the checksum with `shasum -a 256 <file>` on macOS or `sha256sum <file>` on Linux.
