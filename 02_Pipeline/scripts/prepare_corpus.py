@@ -54,7 +54,7 @@ import wordninja
 # 项目根：本文件位于 <ROOT>/02_Pipeline/scripts/prepare_corpus.py
 ROOT = Path(__file__).resolve().parents[2]
 PDF_ROOT = ROOT / "01_Source" / "pdf"
-PDF_SUBDIR = {"primary": "2024_主语料", "robustness": "2025_稳健性"}
+PDF_SUBDIR = {"primary": "2024_main", "robustness": "2025_robustness"}
 OUT_ROOT = ROOT / "01_Source" / "v3"
 MANUAL_OVERRIDE_ROOT = ROOT / "01_Source" / "manual_overrides" / "approved"
 LOG_ROOT = ROOT / "02_Pipeline" / "logs"

@@ -1,6 +1,6 @@
 # China-US-NEV-ESG-Discourse-Analysis
 
-中美新能源车企 ESG 话语分析：语料制备代码
+Corpus preparation code for a discourse analysis of the ESG reports of Chinese and U.S. new energy vehicle manufacturers.
 
 Code for preparing the corpus used in a corpus-based discourse analysis of the English sustainability (ESG) reports of six new energy vehicle manufacturers: BYD, NIO and XPeng (China), and Tesla, Rivian and Lucid (United States).
 
@@ -50,7 +50,7 @@ python -m unittest discover -s 02_Pipeline/tests -p "test_*.py"  # 33 rule tests
 
 The word list used to judge whether a string is a real word is the system dictionary at `/usr/share/dict/words` (on macOS this is Webster's Second International, about 235,000 words). Linux systems usually provide a similar list in the same place.
 
-Comments in the code are mostly in Chinese.
+Some comments in the code are still in Chinese and are being translated.
 
 ## Licence
 
